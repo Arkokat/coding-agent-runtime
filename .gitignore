@@ -1,0 +1,22 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+.env
+.env.local
+/tags
+/cscope.out
+/cscope.in.out
+/cscope.po.out
+
+# Worktrees
+.worktrees/
+
+# Local data (never commit)
+/.local-data/
