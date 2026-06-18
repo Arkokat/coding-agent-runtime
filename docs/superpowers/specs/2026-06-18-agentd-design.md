@@ -26,7 +26,7 @@ A persistent Rust daemon that orchestrates multiple coding-agent sessions (openc
 | 12 | Status line: shell-call via `status-interval 1` | 1s refresh, in-memory cache, <50ms p99, <1s hard budget |
 | 13 | Dashboard layout: header + list + detail + footer | Standard, resizable detail |
 | 14 | Color palette: 4 semantic + 2 neutral, ANSI 256 | Minimal, color-blind safe via symbols, `--no-color` escape |
-| 15 | Live tests: release-gate (3-layer plan) | Test-agent fixture + recorded-replay + Ollama; real-API for Claude Code |
+| 15 | Live tests: HTTP mock server (paywall-free) + test-agent fixture, release-gated | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL`/`--openai-api-base` for all 4 agents; no paid API needed |
 | 16 | Metrics: in-memory + `agentd metrics` + `agentd debug bundle` | Prometheus text + OTLP/JSON formats shipped; no endpoint v1, strict PII defaults |
 | 17 | Dogfooding: AGENTS.md, subagents, workflows, ADRs in repo v1 | Repo set up for agent productivity from day 1; in-tool surfacing of AGENTS.md post-v1 |
 | 18 | License: MIT | Permissive, simplest, matches Rust CLI convention, no patent grant, all-license plugins allowed |
@@ -124,26 +124,56 @@ autostart = true
 config = { model = "claude-sonnet-4-5" }
 ```
 
-## 3. E2E testing (3-layer, release-gated)
+## 3. E2E testing (3-layer, paywall-free)
+
+**All test layers run with zero paid dependencies. Real APIs are opt-in only, never required.**
 
 | Layer | Trigger | Mechanism | Cost |
 |---|---|---|---|
 | **Unit** | every PR | parser tests with byte fixtures | $0 |
 | **Integration** | every PR | `TestHarness` + scripted test-agent | $0 |
-| **Live, recorded** | release | VCR HTTP replay for each plugin | $0 after first record |
-| **Live, Ollama** | release | opencode/aider/codex pointed at local Ollama | $0 |
-| **Live, real API** | release | Claude Code + Haiku, smoke only | cents |
+| **HTTP mock** | every PR + release | `axum` server with canned responses; plugin points at it via `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` / `--openai-api-base` | $0 |
+
+**Why this works for all 4 agents (confirmed from current docs):**
+
+| Agent | Base URL env var | Source |
+|---|---|---|
+| **opencode** | `OPENAI_BASE_URL` | opencode supports OpenAI-compat base |
+| **Claude Code** | `ANTHROPIC_BASE_URL` | Anthropic docs (env-vars page): "Override the API endpoint to route requests through a proxy or gateway" |
+| **Codex** | `OPENAI_BASE_URL` | OpenAI SDK convention; verify per current docs in implementation phase |
+| **Aider** | `--openai-api-base` | Aider CLI flag (documented) |
+
+**HTTP mock server** (in `agentd-testing`):
+- Generic `axum` server on `127.0.0.1:0` (random port)
+- Per-agent scenario scripts in `crates/agentd-testing/fixtures/http/<agent>/scenarios/*.toml`
+- Each scenario = sequence of `{request_match, response_chunks, response_headers, status_code}`
+- Match by `method + path + body_hash` (default) or by full body
+- Replays canned response, including streaming SSE if needed
+- Plugins are real, talk to real local HTTP, get real HTTP responses — but responses are scripted
 
 **`agentd-testing` crate provides:**
 - `TestHarness::new(config) -> Harness` — temp dir, daemon on UDS, cleanup on drop
-- `TestAgent` — fixture binary. Reads script (`{emit: event, after_ms: N}`), exits on EOF.
-- `ScriptedSession` builder
-- HTTP recording proxy (for VCR layer)
+- `TestAgent` — fixture binary. Reads script (`{emit: event, after_ms: N}`), exits on EOF. For unit/integration without HTTP.
+- `HttpMock::start(scenarios) -> (Url, Handle)` — start mock server, return base URL + handle for shutdown
+- `ScriptedSession` builder — convenience for common scenario flows
+- Per-agent base-URL env var setter (so test runner can configure plugin to use mock)
 
 **CI:**
-- PR: unit + integration, all 4 plugin SDKs against test-agent. <8 min.
-- Nightly: + recorded-replay + Ollama suite. <30 min.
-- Release: + real-API smoke + benchmarks. <60 min. **Release fails if any of these fail.**
+- PR: unit + integration (test-agent) + HTTP mock, all 4 plugins, all 4 OS/arch targets. <10 min.
+- Nightly: + cross-plugin scenarios (session handoff, crash recovery, restart). <20 min.
+- Release: + chaos tests (random request orderings, malformed responses). <30 min. **Release fails if any of these fail.**
+
+**Opt-in real API tests (post-v1, maintainer-triggered, soft-warn only):**
+- If a maintainer sets `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` as a repo variable AND sets `LIVE_LLM_TESTS=1`, a separate workflow runs real-agent smoke tests
+- Result is reported as "live test status" badge, not a release gate
+- No CI secret required, no cost to project
+
+**Maintenance tradeoff:**
+- ✅ Free forever, hermetic, deterministic, fast
+- ❌ Won't catch upstream agent changes (new required header, new response field)
+- ❌ Won't catch API-side changes (new response format)
+- Mitigation: maintainer runs plugin against real agent manually before each release; check `CHANGELOG` of each agent for breaking changes; update mock scenarios accordingly
+- Optional opt-in smoke: real-agent run by maintainer, soft-warn status
 
 ## 4. Components & data flow
 
@@ -737,7 +767,7 @@ struct AgentdError {
 5. **`agentd-tui`**: `insta` snapshots at 80×24 and 200×50 for: empty, each status, 10 mixed, errored overlay, help modal, new modal (empty/filtering/selected), rename modal. Keyboard integration.
 6. **CLI**: `assert_cmd` per subcommand. Snapshot output (`--color=never`).
 7. **Plugin SDK**: `MockBackend` roundtrip, `RealBackend` trait compile-test, end-to-end in test mode.
-8. **Plugins**: parser fixtures in `tests/fixtures/agent-output/<agent>/*.jsonl`, status inference, cost calc, harness integration with mock, VCR replay (release), Ollama (release), real API smoke (release).
+8. **Plugins**: parser fixtures in `tests/fixtures/agent-output/<agent>/*.jsonl`, status inference, cost calc, harness integration with mock, HTTP mock scenarios (`fixtures/http/<agent>/scenarios/*.toml`), chaos tests (release).
 9. **Test harness**: 100 concurrent sessions, property test random events, cleanup on drop.
 10. **Installer**: `agentd init` smoke in tmpdir, curl install in docker, brew formula in CI.
 
@@ -745,9 +775,9 @@ struct AgentdError {
 
 | Stage | Triggers | Contents | Budget |
 |---|---|---|---|
-| PR | every push | unit + integration + snapshots, 4 SDKs × mock, linux + macOS | <8 min |
-| Nightly | cron | + live recorded-replay + Ollama | <30 min |
-| Release | tag | + real-API smoke + benchmarks | <60 min |
+| PR | every push | unit + integration (test-agent) + HTTP mock, 4 plugins, 4 OS/arch | <10 min |
+| Nightly | cron | + cross-plugin scenarios, chaos tests | <20 min |
+| Release | tag | + benchmarks | <30 min |
 
 ### Test execution
 
@@ -1117,9 +1147,8 @@ jobs:
 ```
 
 **`.github/workflows/nightly.yml`** (cron 02:00 UTC):
-- Full matrix, + live recorded-replay, + Ollama suite
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` from secrets
-- Soft fail on live test (notify but don't break nightly); hard fail on recorded-replay
+- Full matrix, + cross-plugin scenarios, + chaos tests
+- No secrets required (all paths paywall-free)
 
 **`.github/workflows/release.yml`** (tag push `v*`):
 1. `release-plz` bumps version, generates changelog, creates PR
@@ -1139,11 +1168,10 @@ jobs:
 
 ### Secrets
 
-- `ANTHROPIC_API_KEY` — Claude Code live tests (release)
-- `OPENAI_API_KEY` — Codex live tests (release)
 - `CARGO_REGISTRY_TOKEN` — `cargo publish`
 - `HOMEBREW_TAP_TOKEN` — auto-PR to tap repo
 - `GITHUB_TOKEN` — auto (provided)
+- **No paid-API secrets required.** Real-agent tests are opt-in via maintainer-set repo variable (`LIVE_LLM_TESTS=1`), not CI secret.
 
 ### Required status checks (branch protection)
 
@@ -1167,7 +1195,7 @@ PR cannot merge unless:
 3. `cargo nextest run --workspace --all-features` (unit + integration + snapshot)
 4. `cargo doc --no-deps` (public API docs, no warnings)
 5. `cargo audit` (security advisories)
-6. (nightly/release only) live tests
+6. (nightly/release only) cross-plugin scenarios, chaos tests
 7. (release only) `cargo bench` + `cargo miri run`
 
 ### Pre-commit hook (local dev, optional)
