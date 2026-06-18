@@ -1317,6 +1317,235 @@ Done. To remove the binary: cargo uninstall agentd
 - README "Uninstall" section — quick reference + install-method-specific commands
 - AGENTS.md — note `--keep-*` flags for partial uninstalls
 
+## 19. worklog (deferred to post-v1)
+
+**Workspace member `agentd-worklog` — separate binary, ships in same monorepo, reads agentd's `state.db`, produces human-readable work summaries.**
+
+**Deferred because v1 must ship a working daemon first. This is the design we return to.**
+
+### 3-layer design
+
+| Layer | What | LLM | When |
+|---|---|---|---|
+| **Stats** | counts, durations, status changes, event aggregates | no | always on |
+| **Episodes** | time per "thing", task grouping, basic classification | no | v1 of worklog |
+| **Summary** | natural-language "what I did today" with nuance | yes (opt-in) | v2 of worklog, `--llm` flag |
+
+**v1 of worklog = Stats + Episodes (zero LLM).** v2 layers LLM as opt-in only — never default, never break paywall-free principle.
+
+### Episode grouping algorithm
+
+Walks `task_changed` events per session, groups contiguous same-task events into episodes:
+
+1. For each session, query `session_events` ordered by `created_at`
+2. Walk through, accumulating runs of same `current_task` text (fuzzy match via `nucleo`, threshold 0.85)
+3. Each run becomes an episode: `{task_text, started_at, ended_at, duration_seconds}`
+4. Subtract idle gaps (consecutive `status_changed` to `idle` with no task change) from duration
+5. Classify via keyword heuristic:
+   - `fix|bug|broken|patch` → `bugfix`
+   - `refactor|cleanup|reorganize|simplify` → `refactor`
+   - `add|implement|new feature|create` → `feature`
+   - `test|spec|coverage` → `test`
+   - `doc|readme|comment|document` → `docs`
+   - default → `unknown`
+6. Output sorted by duration desc
+
+### Data model (worklog's own DB)
+
+**Separate from agentd's `state.db` — clean uninstall, independent schema.** Path: `~/.local/share/agentd/worklog.db`.
+
+```sql
+CREATE TABLE worklog_day (
+  date                   TEXT PRIMARY KEY,        -- YYYY-MM-DD
+  session_count          INTEGER NOT NULL,
+  active_seconds         INTEGER NOT NULL,
+  agents_json            TEXT NOT NULL,           -- {"opencode": 3600, "claude": 1800}
+  projects_json          TEXT NOT NULL,           -- {"agentd": 7200, "blog": 1800}
+  summary_text           TEXT,                    -- LLM-generated, nullable
+  summary_provider       TEXT,                    -- 'anthropic'|'openai'|'ollama'|null
+  summary_model          TEXT,
+  summary_generated_at   TEXT
+);
+
+CREATE TABLE worklog_session_day (
+  date                   TEXT NOT NULL,
+  session_id             TEXT NOT NULL,
+  started_at             TEXT,
+  ended_at               TEXT,
+  active_seconds         INTEGER NOT NULL,
+  task_titles_json       TEXT NOT NULL,           -- ["editing X", "fixing Y"]
+  tool_call_count        INTEGER,
+  git_commits            INTEGER,
+  git_lines_added        INTEGER,
+  git_lines_removed      INTEGER,
+  summary_text           TEXT,
+  PRIMARY KEY (date, session_id)
+);
+
+CREATE TABLE worklog_episode (
+  id                     TEXT PRIMARY KEY,        -- UUID v7
+  session_id             TEXT NOT NULL,
+  working_dir            TEXT NOT NULL,
+  task_text              TEXT NOT NULL,
+  started_at             TEXT NOT NULL,
+  ended_at               TEXT NOT NULL,
+  duration_seconds       INTEGER NOT NULL,
+  classification         TEXT NOT NULL,           -- 'feature'|'bugfix'|'refactor'|'test'|'docs'|'unknown'
+  summary_text           TEXT
+);
+
+CREATE INDEX idx_episode_session ON worklog_episode(session_id);
+CREATE INDEX idx_episode_date ON worklog_episode(started_at);
+CREATE INDEX idx_episode_class ON worklog_episode(classification, duration_seconds DESC);
+
+-- Only created if LLM available and user opts in
+CREATE TABLE worklog_embedding (
+  date                   TEXT NOT NULL,
+  kind                   TEXT NOT NULL,           -- 'day' | 'episode'
+  ref_id                 TEXT NOT NULL,           -- date string or episode id
+  embedding              BLOB NOT NULL,           -- f32 little-endian
+  model                  TEXT NOT NULL,
+  generated_at           TEXT NOT NULL,
+  PRIMARY KEY (kind, ref_id, model)
+);
+```
+
+### CLI surface
+
+```rust
+// v1 (no LLM)
+agentd-worklog today
+agentd-worklog yesterday
+agentd-worklog since <ts>          // "9am", "24h", "2026-06-17", ISO 8601
+agentd-worklog week
+agentd-worklog month
+
+// Flags (v1)
+  --format text|markdown|json|html  // default text
+  --include-git                    // walk each session's working_dir, get git stats
+  --project <name>                 // filter by working_dir basename
+  --agent <type>                   // filter by agent_type
+  --save                           // write to worklog_day table
+
+// v2 (LLM)
+agentd-worklog summarize --date today
+  --force                          // regenerate even if cached
+  --provider ollama                // override config
+  --model qwen2.5-coder:7b
+agentd-worklog search "auth bugs"  // semantic, only if embeddings exist
+```
+
+### Sample output (v1, text)
+
+```
+2026-06-18 (Thu)
+================
+Active:    4h 12m across 7 sessions, 3 still open
+
+Episodes (by duration):
+  45m  test       "writing tests for tmux_interface"
+  23m  feature    "editing crates/agentd/src/status.rs"
+  22m  bugfix     "fixing pane border format bug"
+  17m  refactor   "event bus to channels"
+  12m  docs       "updating AGENTS.md"
+
+Projects:
+  agentd      3h 45m  (5 sessions)
+  api-server    27m  (2 sessions)
+
+Agents:
+  claude-sonnet-4   2h 50m
+  opencode          1h 22m
+
+Git (--include-git):
+  +847 / -312 across 3 repos, 12 commits
+
+Open sessions:
+  ● agentd  claude-sonnet-4  working  editing src/status.rs
+  ◌ api-server  opencode  idle  waiting for input
+```
+
+### LLM integration (v2, opt-in)
+
+**Config file:** `~/.config/agentd/worklog.toml`
+
+```toml
+[llm]
+provider = "ollama"                # "anthropic" | "openai" | "ollama" | null
+model = "qwen2.5-coder:7b"         # or "claude-haiku-4-5" | "gpt-4o-mini"
+base_url = "http://localhost:11434/v1"   # for ollama or custom proxy
+api_key_env = "ANTHROPIC_API_KEY"         # name of env var holding the key
+```
+
+**Cost mitigation:**
+- Default off — never invokes LLM without explicit `--llm` or `summarize` command
+- Cache summaries in `worklog_day.summary_text`; re-generate only with `--force`
+- Show estimated cost (tokens × provider price) before invoking
+- Use cheapest viable model (Haiku, gpt-4o-mini, or local Ollama)
+- Config validation: refuse to start if provider requires key and key missing
+
+**Prompt template (v2):**
+```
+You are analyzing a developer's work day. Given the session log below,
+produce a 2-3 sentence natural-language summary. Focus on:
+- What was built/changed
+- What was debugged
+- What was left unfinished for tomorrow
+Be specific, mention file paths and function names when relevant.
+
+Sessions:
+{paste worklog_day + worklog_episode + worklog_session_day as formatted text}
+
+Summary:
+```
+
+### Semantic search (v3+, only if LLM configured)
+
+- `agentd-worklog search "auth bugs"` generates query embedding via configured model
+- Cosine similarity against `worklog_embedding` table
+- Returns top-N days/episodes with date, snippet, similarity score
+- Free if local embedding model (e.g., `nomic-embed-text` via Ollama)
+- Paid if cloud embedding API (user opts in)
+
+### Workspace structure (when implemented)
+
+```
+crates/
+├── agentd/                    # existing
+├── agentd-protocol/           # existing, used by worklog
+├── agentd-testing/            # existing
+├── agentd-worklog/            # NEW (deferred)
+│   ├── src/
+│   │   ├── main.rs            # CLI
+│   │   ├── session_query.rs   # read agentd state.db
+│   │   ├── episode.rs         # grouping algorithm
+│   │   ├── classify.rs        # keyword classifier
+│   │   ├── git_query.rs       # optional git stats
+│   │   ├── summary.rs         # v2: LLM summary
+│   │   ├── embed.rs           # v3: embeddings
+│   │   └── lib.rs
+│   ├── AGENTS.md
+│   └── tests/
+```
+
+### Integration with agentd (post-v1)
+
+- `agentd-worklog` is a separate binary, reads agentd's `state.db` read-only
+- Optional: `agentd worklog` subcommand proxies to `agentd-worklog` (if installed)
+- Optional: TUI shows a "today" panel if worklog binary is detected
+- Optional: `agentd` exposes a `worklog_today` notification event for tray/bell integrations
+- All optional — worklog can be uninstalled without affecting agentd
+
+### Open questions for when we return to this
+
+- LLM summarization prompt: how much context to include (full events vs. just episodes)
+- Embedding granularity: per-day, per-episode, or per-event
+- Cross-project rollups: sum time across multiple working_dirs that share a project root (e.g., monorepo with `crates/` subdirs)
+- Calendar integration: attach worklog to specific calendar events
+- Standup auto-generation: format worklog for daily standup (3 bullets: yesterday, today, blockers)
+- Export targets: Notion, Obsidian, plain markdown file
+- Diff-over-time: "what changed in my workflow this month vs last?"
+
 ## Open questions / out of scope v1
 
 - Multi-machine sync (Nostr, ssh) — out
