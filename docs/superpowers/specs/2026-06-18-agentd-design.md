@@ -31,6 +31,7 @@ A persistent Rust daemon that orchestrates multiple coding-agent sessions (openc
 | 17 | Dogfooding: AGENTS.md, subagents, workflows, ADRs in repo v1 | Repo set up for agent productivity from day 1; in-tool surfacing of AGENTS.md post-v1 |
 | 18 | License: MIT | Permissive, simplest, matches Rust CLI convention, no patent grant, all-license plugins allowed |
 | 19 | Multiarch: 4 targets (linux/macos × amd64/aarch64), GitHub Actions CI | Native GH runners per arch, no cross-compile dance, free for public repo |
+| 20 | Uninstall: complete removal incl. tmux.conf fragment; keep tmux sessions by default | Critical for tmux-integrated tool; dry-run + backup + install-method-aware binary removal |
 
 ## 1. Architecture
 
@@ -1180,6 +1181,113 @@ PR cannot merge unless:
 - Strategy: keep macOS jobs to ~5 min each (cache, parallel test, no live)
 - Estimate: PR build = 4 jobs × 5 min = 20 min; release = 4 × 8 min = 32 min; nightly = 4 × 15 min = 60 min
 - All within free tier
+
+## 18. Uninstall
+
+**Goal: complete removal, including tmux config, with dry-run + backup. Cargo/brew users get the right uninstall hint for the binary.**
+
+### `agentd uninstall` (subcommand)
+
+**Flags:**
+- `--dry-run` — show what would be removed, don't touch anything
+- `--purge` — remove config + state + plugins (default)
+- `--keep-config` — keep `~/.config/agentd/`
+- `--keep-state` — keep `state.db`, logs, debug bundles
+- `--keep-plugins` — keep downloaded plugin binaries
+- `--keep-sessions` — don't kill `agentd-*` tmux sessions (default)
+- `--kill-sessions` — kill `agentd-*` tmux sessions
+- `--yes` — skip confirmation prompt
+- `--force` — don't error if daemon already stopped, partial state
+- `--backup <dir>` — copy state.db + config before removing (default: `~/.local/share/agentd.last-backup/`)
+- `--verify` — verify clean removal, exit non-zero on leftovers
+
+### Interactive flow
+
+```
+$ agentd uninstall
+This will remove:
+  Daemon: stop (pid 12345)
+  Plugins: stop (3 running)
+  Config:  ~/.config/agentd/  (3 files, 1.2 KB)
+  State:   ~/.local/share/agentd/  (state.db 2.3 MB, logs 12 MB, 3 plugins 45 MB)
+  Cache:   ~/.cache/agentd/
+  Runtime: /run/user/1000/agentd/  (sockets, locks)
+  tmux:    remove 4 lines from ~/.tmux.conf (agentd init fragment)
+
+  Will NOT remove:
+  Binary:  /Users/me/.cargo/bin/agentd  (cargo owns it — run: cargo uninstall agentd)
+  Tmux sessions: 5 named agentd-*  (use --kill-sessions to remove)
+
+Continue? [y/N] y
+
+Backed up state.db to ~/.local/share/agentd.last-backup/state.db
+Stopped daemon
+Stopped 3 plugins
+Removed tmux.conf fragment (restored from backup ~/.tmux.conf.bak)
+Removed config dir
+Removed state dir
+Removed cache dir
+Removed runtime dir
+
+Done. To remove the binary: cargo uninstall agentd
+     Or if installed via curl: rm ~/.local/bin/agentd
+```
+
+### Removal steps (in order)
+
+1. **Stop daemon** — `agentd daemon stop` (SIGTERM, 5s grace, SIGKILL fallback)
+2. **Stop plugins** — daemon stops on shutdown; verify gone
+3. **Remove tmux.conf fragment** — find `# >>> agentd >>>` ... `# <<< agentd <<<` block in `~/.tmux.conf`; if user-modified inside block, refuse + prompt; else delete block, restore from `.bak` if created by `agentd init`
+4. **Remove config dir** — `~/.config/agentd/` (unless `--keep-config`)
+5. **Remove state dir** — `~/.local/share/agentd/` (unless `--keep-state`; backup first unless `--no-backup`)
+6. **Remove cache dir** — `~/.cache/agentd/`
+7. **Remove runtime dir** — `$XDG_RUNTIME_DIR/agentd/`
+8. **Remove binary** — only if curl-installed (detected by ownership/symlink); for cargo/brew, instruct user
+9. **Verify** — no `agentd` processes, no `agentd-*` tmux sessions (warn if `--keep-sessions`), no agentd files in standard paths
+
+### Detection of install method
+
+| Method | Binary location | Detection | Uninstall hint |
+|---|---|---|---|
+| **curl** | `~/.local/bin/agentd` | file exists there + not a symlink to cargo | `rm ~/.local/bin/agentd` (or auto) |
+| **cargo** | `~/.cargo/bin/agentd` | file there + same dir as other cargo bins | `cargo uninstall agentd` |
+| **brew** | `/opt/homebrew/bin/agentd` or `/usr/local/bin/agentd` | file in brew prefix | `brew uninstall agentd` |
+
+### Safety
+
+- **Dry-run first** — print plan, wait for confirmation (skip with `--yes`)
+- **Backup by default** — copy `state.db` + `config.toml` + `plugins.toml` to `~/.local/share/agentd.last-backup/` before removing state dir. Only one backup kept (overwritten). Restore: `cp -r ~/.local/share/agentd.last-backup/{state.db,config.toml,plugins.toml} <original paths>`
+- **Don't touch user files** — only `agentd/` XDG paths, only `agentd-*` tmux sessions, only delimited tmux.conf fragment
+- **Refuse on modified fragment** — if user edited lines inside `# >>> agentd >>>` block, refuse auto-remove, show diff, require manual edit
+- **No sudo** — never touches `/usr`, `/opt`, system paths. If binary is system-installed, instruct user to use package manager
+- **Idempotent** — uninstall twice = second is no-op + verification
+
+### Verification post-uninstall
+
+`agentd uninstall --verify` (also auto-runs at end):
+- `pgrep -f agentd` → empty
+- `tmux list-sessions -F '#{session_name}' | grep ^agentd-` → empty (or warn if `--keep-sessions`)
+- `ls ~/.config/agentd ~/.local/share/agentd ~/.cache/agentd $XDG_RUNTIME_DIR/agentd` → all "No such file"
+- `grep -q agentd ~/.tmux.conf` → empty (warn if user kept fragment)
+- Exit 0 clean, 1 dirty (with remediation hints)
+
+### Edge cases to test
+
+- Daemon hung → SIGKILL after timeout
+- `state.db` open by another process → SQLite handles
+- tmux server not running → skip session check
+- Uninstall twice → idempotent no-op
+- Non-standard `XDG_*` env vars → respect them
+- macOS vs Linux → different XDG paths possible
+- Non-root → works, never needs root
+- Binary already gone → inform, not error
+- Modified tmux.conf fragment → refuse, prompt manual edit
+
+### Documentation
+
+- `agentd uninstall --help` — full flag reference
+- README "Uninstall" section — quick reference + install-method-specific commands
+- AGENTS.md — note `--keep-*` flags for partial uninstalls
 
 ## Open questions / out of scope v1
 
