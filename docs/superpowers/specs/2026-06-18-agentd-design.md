@@ -29,6 +29,8 @@ A persistent Rust daemon that orchestrates multiple coding-agent sessions (openc
 | 15 | Live tests: release-gate (3-layer plan) | Test-agent fixture + recorded-replay + Ollama; real-API for Claude Code |
 | 16 | Metrics: in-memory + `agentd metrics` + `agentd debug bundle` | Prometheus text + OTLP/JSON formats shipped; no endpoint v1, strict PII defaults |
 | 17 | Dogfooding: AGENTS.md, subagents, workflows, ADRs in repo v1 | Repo set up for agent productivity from day 1; in-tool surfacing of AGENTS.md post-v1 |
+| 18 | License: MIT | Permissive, simplest, matches Rust CLI convention, no patent grant, all-license plugins allowed |
+| 19 | Multiarch: 4 targets (linux/macos × amd64/aarch64), GitHub Actions CI | Native GH runners per arch, no cross-compile dance, free for public repo |
 
 ## 1. Architecture
 
@@ -1041,6 +1043,143 @@ First phase of writing-plans must include:
 2. Verify opencode + Claude Code read AGENTS.md correctly
 3. Test subagent invocations
 4. Then begin crate-by-crate TDD implementation
+
+## 17. Multiarch + CI
+
+**Targets v1 (4):** Linux x86_64, Linux aarch64, macOS x86_64, macOS aarch64. Windows post-v1 (tmux not native).
+
+### Build matrix
+
+| Triple | uname -m | CI runner | Cross-compile |
+|---|---|---|---|
+| `x86_64-unknown-linux-gnu` | `x86_64` | `ubuntu-latest` | native |
+| `aarch64-unknown-linux-gnu` | `aarch64` | `ubuntu-24.04-arm` | native (free GH runner) |
+| `x86_64-apple-darwin` | `x86_64` | `macos-13` | native |
+| `aarch64-apple-darwin` | `arm64` | `macos-latest` | native |
+
+**No cross-compile dance** — native GH runners per arch. Free for public repos. `cross` crate as fallback for non-CI builds.
+
+**musl:** post-v1. Static binary useful for Docker but adds matrix entry.
+
+### Distribution per target
+
+GitHub release assets, one per triple:
+```
+agentd-v0.1.0-x86_64-unknown-linux-gnu.tar.xz
+agentd-v0.1.0-aarch64-unknown-linux-gnu.tar.xz
+agentd-v0.1.0-x86_64-apple-darwin.tar.xz
+agentd-v0.1.0-aarch64-apple-darwin.tar.xz
+agentd-v0.1.0-SHA256SUMS
+```
+
+Each tarball: `agentd` binary, `README.md`, `LICENSE`, `install.sh` (arch-detecting wrapper). `SHA256SUMS` signed by release action.
+
+**Plugin assets** follow same pattern. `agentd plugin install <name>` arch resolution:
+1. `uname -s` + `uname -m` → derive target triple
+2. Look up release asset by triple in plugin's GitHub releases
+3. Download, verify SHA256, extract to `~/.local/share/agentd/plugins/`
+
+Fallback chain: exact triple → `*-unknown-{linux,darwin}-*` with same arch → user error with hint.
+
+**Homebrew:** single tap `arkokat/homebrew-agentd`, formula uses `Hardware::CPU.arch` to pick binary at install. macOS only for v1 (linuxbrew could be added post-v1).
+
+### License: MIT
+
+- Shortest, most familiar
+- Standard for Rust CLI tooling (ripgrep, fd, bat, cargo, etc.)
+- Plugins can be any license — explicitly fine
+- No patent grant (not needed for a local CLI wrapping other CLIs)
+- All contributors keep copyright; no CLA required
+
+Full LICENSE text: standard MIT template with `Copyright (c) 2026 arkokat`.
+
+### CI workflows (GitHub Actions)
+
+**`.github/workflows/ci.yml`** (every PR + push to main):
+```yaml
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  fmt-clippy:
+    runs-on: ubuntu-latest
+    steps: [checkout, toolchain, cache, fmt-check, clippy-strict]
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-13, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps: [checkout, toolchain, cache, install-tmux, nextest, snapshot-review-needed-check]
+```
+
+**`.github/workflows/nightly.yml`** (cron 02:00 UTC):
+- Full matrix, + live recorded-replay, + Ollama suite
+- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` from secrets
+- Soft fail on live test (notify but don't break nightly); hard fail on recorded-replay
+
+**`.github/workflows/release.yml`** (tag push `v*`):
+1. `release-plz` bumps version, generates changelog, creates PR
+2. On PR merge → tag push triggers this
+3. Matrix build: all 4 targets → tarballs + SHA256SUMS
+4. Upload to GitHub release
+5. `cargo publish` for each crate in dependency order (`agentd-protocol` first)
+6. Update Homebrew formula in `arkokat/homebrew-agentd` (auto-PR via tap workflow)
+7. Update `agentd.dev/install.sh` to point at new version
+
+### Caching
+
+- `Swatinem/rust-cache@v2` for cargo registry + index
+- `mozilla/sccache-action` for build artifacts (cross-job, backed by GH cache)
+- Cache key: hash of `Cargo.lock` + toolchain version
+- Restore keys: prefix-only for partial hits
+
+### Secrets
+
+- `ANTHROPIC_API_KEY` — Claude Code live tests (release)
+- `OPENAI_API_KEY` — Codex live tests (release)
+- `CARGO_REGISTRY_TOKEN` — `cargo publish`
+- `HOMEBREW_TAP_TOKEN` — auto-PR to tap repo
+- `GITHUB_TOKEN` — auto (provided)
+
+### Required status checks (branch protection)
+
+PR cannot merge unless:
+- `fmt-clippy` passes (single job, fast feedback)
+- `test` matrix passes (all 4 OS/arch)
+- Snapshot review: required reviewer must approve diff OR `insta accept` was run
+
+### Badges in README
+
+```markdown
+[![CI](https://github.com/arkokat/agentd/actions/workflows/ci.yml/badge.svg)](...)
+[![crates.io](https://img.shields.io/crates/v/agentd)](...)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](...)
+```
+
+### Test execution order (per CI job)
+
+1. `cargo fmt --check`
+2. `cargo clippy --all-targets --all-features -- -D warnings`
+3. `cargo nextest run --workspace --all-features` (unit + integration + snapshot)
+4. `cargo doc --no-deps` (public API docs, no warnings)
+5. `cargo audit` (security advisories)
+6. (nightly/release only) live tests
+7. (release only) `cargo bench` + `cargo miri run`
+
+### Pre-commit hook (local dev, optional)
+
+`cargo-husky` or git hook: `cargo fmt && cargo clippy -- -D warnings && cargo nextest run`. Skipped if `AGENTD_SKIP_HOOKS=1`.
+
+### Cost (public repo)
+
+- Linux: unlimited free minutes
+- macOS: 2000 min/month free, ~10x Linux cost
+- Strategy: keep macOS jobs to ~5 min each (cache, parallel test, no live)
+- Estimate: PR build = 4 jobs × 5 min = 20 min; release = 4 × 8 min = 32 min; nightly = 4 × 15 min = 60 min
+- All within free tier
 
 ## Open questions / out of scope v1
 
