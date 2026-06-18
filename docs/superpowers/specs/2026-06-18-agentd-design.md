@@ -28,6 +28,7 @@ A persistent Rust daemon that orchestrates multiple coding-agent sessions (openc
 | 14 | Color palette: 4 semantic + 2 neutral, ANSI 256 | Minimal, color-blind safe via symbols, `--no-color` escape |
 | 15 | Live tests: release-gate (3-layer plan) | Test-agent fixture + recorded-replay + Ollama; real-API for Claude Code |
 | 16 | Metrics: in-memory + `agentd metrics` + `agentd debug bundle` | Prometheus text + OTLP/JSON formats shipped; no endpoint v1, strict PII defaults |
+| 17 | Dogfooding: AGENTS.md, subagents, workflows, ADRs in repo v1 | Repo set up for agent productivity from day 1; in-tool surfacing of AGENTS.md post-v1 |
 
 ## 1. Architecture
 
@@ -913,6 +914,133 @@ struct Metrics {
 - Roundtrip: `agentd metrics --format otlp | otelcol validate` returns OK
 - Privacy: `strings bundle.tar.gz | grep -i 'task\|message\|prompt'` returns no PII
 - Bundle: size cap enforced, missing files logged not failed
+
+## 16. Development agent harnessing (dogfooding)
+
+**Goal: agentd's own repo is set up to maximize coding-agent productivity from day 1. We use the tools we build, in the tools we build with.**
+
+### Repo files (created in v1 setup phase, before any code)
+
+```
+agentd/                                  <- repo root
+├── AGENTS.md                            <- cross-agent instructions
+├── CLAUDE.md                            <- Claude Code: alias to AGENTS.md + Claude-specific
+├── README.md                            <- human entry point, install + usage
+├── CONTRIBUTING.md                      <- pick up task, TDD workflow, PR
+├── ARCHITECTURE.md                      <- high-level architecture for agents to read
+├── LICENSE
+│
+├── .opencode/                           <- opencode config (we dogfood)
+│   ├── config.json                      <- provider, model, ignore paths
+│   ├── agents/                          <- subagent definitions
+│   │   ├── explore.md                   <- codebase search subagent
+│   │   ├── tdd.md                       <- test-first subagent
+│   │   ├── reviewer.md                  <- code review subagent
+│   │   └── planner.md                   <- implementation plan subagent
+│   └── commands/                        <- custom slash commands
+│       ├── test.md
+│       ├── lint.md
+│       └── bench.md
+│
+├── .claude/                             <- Claude Code config
+│   └── hooks/
+│
+├── docs/
+│   ├── architecture/
+│   │   ├── overview.md
+│   │   ├── data-flow.md
+│   │   ├── plugin-sdk.md
+│   │   └── status-line.md
+│   ├── decisions/                       <- ADRs
+│   │   ├── 0001-json-rpc-over-uds.md
+│   │   ├── 0002-tmux-interface.md
+│   │   └── ...
+│   ├── superpowers/
+│   │   └── specs/
+│   │       └── 2026-06-18-agentd-design.md
+│   └── workflows/
+│       ├── tdd.md
+│       ├── commit.md
+│       └── release.md
+│
+├── crates/
+│   ├── agentd-protocol/AGENTS.md        <- per-crate: what it does, conventions
+│   ├── agentd/AGENTS.md
+│   ├── agentd-testing/AGENTS.md
+│   └── ...
+│
+└── xtask/                               <- build automation
+```
+
+### AGENTS.md (root, cross-agent)
+
+Contents:
+- Project goal (one paragraph from spec)
+- Architecture summary (3-5 lines)
+- Crate layout
+- Build/test commands (`cargo build`, `cargo nextest run`, `cargo bench`, `cargo clippy`, `cargo fmt`)
+- Test layers (unit, integration, live)
+- Commit convention (Conventional Commits, signed)
+- PR workflow
+- Code style (rustfmt, clippy lints, no `unsafe` without comment)
+- What NOT to do (no `unwrap()` outside tests, no breaking public API without ADR)
+- Skills to use (brainstorming, TDD, systematic-debugging)
+
+### Per-crate AGENTS.md
+
+Short — what the crate does, key types, dependencies, testing approach. Auto-included by agents that read nearest AGENTS.md.
+
+### Subagent definitions
+
+**`explore.md`** — codebase searcher. Output: file:line table. No fixes proposed.
+
+**`tdd.md`** — TDD specialist. Red-green-refactor. `cargo nextest run -p <crate> -- <test_name>` for fast inner loop. Report: test name, then impl, then green run.
+
+**`reviewer.md`** — code reviewer. Severity-tagged findings. No praise. Checks: correctness, tests, naming, errors, public API, dead code, `unsafe`, missing docs.
+
+**`planner.md`** — implementation planner. Spec section → ordered TDD task list. One commit per task.
+
+### Workflow docs
+
+**`docs/workflows/tdd.md`** — red-green-refactor. `cargo nextest run` for inner loop. Property tests for state machines. Snapshot tests for TUI.
+
+**`docs/workflows/commit.md`** — Conventional Commits, subject ≤50 chars, body = WHY, signed-off, pre-commit = `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo nextest run`.
+
+**`docs/workflows/release.md`** — version bump, tag, release CI, publish to crates + Homebrew tap + GitHub.
+
+### Rules (encoded in AGENTS.md)
+
+- TDD always. No code without failing test first.
+- One task = one commit. Atomic.
+- Read spec before code. Reference spec section in commit body.
+- No `unsafe` in `agentd-protocol` ever. Other crates: comment justifying.
+- No `unwrap()` outside `#[cfg(test)]` or `expect("reason")`.
+- Public APIs documented. `cargo doc --no-deps` no warnings.
+- Snapshots reviewed by human, not auto-accepted.
+- No silent errors. Every fallible op has explicit handling.
+- Status line budget: tests must show < 500ms p99.
+- Plugin `PROTOCOL_VERSION` must match daemon's on connect.
+
+### Dogfooding
+
+- We use opencode (and Claude Code) to build agentd
+- TUI + status line = how we monitor our own dev sessions
+- `agentd metrics --format prometheus` → local Prometheus in dev
+- Live tests use real Ollama + Claude API during development
+
+### Future (post-v1, not in v1)
+
+- agentd reads project's AGENTS.md, surfaces in TUI per session
+- `agentd subagent run explore` invokes project subagent
+- Per-session agent config (model, approval mode) inherited from AGENTS.md
+
+### Implementation plan impact
+
+First phase of writing-plans must include:
+1. Create all repo scaffolding (AGENTS.md, .opencode/, docs/, per-crate AGENTS.md)
+2. Verify opencode + Claude Code read AGENTS.md correctly
+3. Test subagent invocations
+4. Then begin crate-by-crate TDD implementation
 
 ## Open questions / out of scope v1
 
