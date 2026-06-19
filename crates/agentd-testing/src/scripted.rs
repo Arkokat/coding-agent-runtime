@@ -1,6 +1,10 @@
 use crate::scenario::{RequestMatch, Response, Scenario, ScenarioStep};
 
-/// Fluent builder for common test scenarios per agent.
+/// Static factory methods for common per-agent test scenarios.
+///
+/// Each method constructs a fresh `Scenario` value; there is no
+/// internal state to mutate. (For chainable scenario assembly, use
+/// `Scenario` + `ScenarioStep` directly.)
 pub struct ScriptedSession;
 
 impl ScriptedSession {
