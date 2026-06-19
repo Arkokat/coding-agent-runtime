@@ -8,10 +8,12 @@
 #![warn(missing_docs)]
 
 mod error;
+mod methods;
 mod status;
 mod version;
 
 pub use error::{ProtocolError, ProtocolErrorWithMessage};
+pub use methods::Method;
 pub use status::SessionStatus;
 pub use version::PROTOCOL_VERSION;
 
