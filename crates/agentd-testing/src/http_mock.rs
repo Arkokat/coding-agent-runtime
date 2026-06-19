@@ -7,6 +7,7 @@ use axum::{
     routing::any,
 };
 use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -14,6 +15,17 @@ use tokio::sync::oneshot;
 
 // Re-export scenario types so callers can `use agentd_testing::http_mock::*`.
 pub use crate::scenario::{RequestMatch, Response, Scenario, ScenarioStep};
+
+/// Compute the `sha256:<hex>` body hash used by the scenario matcher.
+///
+/// Exposed for testing. Format is `sha256:` followed by 64 lowercase
+/// hex characters (256 bits), RFC 4648 base16.
+pub fn hash_body(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    format!("sha256:{digest:x}")
+}
 
 /// Handle to a running mock server. Drop to stop, or call `stop`.
 pub struct Handle {
@@ -98,7 +110,7 @@ async fn handler(
     let body_bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
         .unwrap_or_default();
-    let body_hash = format!("sha256:{:x}", hash_short(&body_bytes));
+    let body_hash = hash_body(&body_bytes);
 
     let scenarios = mock.scenarios.lock();
     for step in scenarios.iter().flat_map(|s| s.steps.iter()) {
@@ -138,11 +150,4 @@ fn build_response(resp: &Response) -> AxumResponse {
         .header(axum::http::header::CONTENT_TYPE, resp.content_type.clone())
         .body(Body::from(resp.body.clone()))
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build error").into_response())
-}
-
-fn hash_short(bytes: &[u8]) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
 }
