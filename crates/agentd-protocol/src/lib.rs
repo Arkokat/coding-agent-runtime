@@ -1,19 +1,19 @@
 //! agentd-protocol: JSON-RPC 2.0 types and method constants.
-//!
-//! No async. No I/O. Pure data. This crate is the shared vocabulary
-//! between `agentd` (daemon), `agentd-testing` (harness), and all
-//! `agent-plugin-*` crates.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+mod agent;
 mod error;
 mod methods;
+mod session;
 mod status;
 mod version;
 
+pub use agent::AgentType;
 pub use error::{ProtocolError, ProtocolErrorWithMessage};
 pub use methods::Method;
+pub use session::{Session, SessionSource};
 pub use status::SessionStatus;
 pub use version::PROTOCOL_VERSION;
 
@@ -44,5 +44,10 @@ mod tests {
                 assert!(!s.is_terminal(), "{s} should not be terminal");
             }
         }
+    }
+
+    #[test]
+    fn all_agent_types_returns_four_variants() {
+        assert_eq!(AgentType::ALL.len(), 4);
     }
 }
