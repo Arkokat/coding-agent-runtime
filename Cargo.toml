@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/agent-plugin-sdk",
     "crates/agentd",
     "crates/agentd-protocol",
     "crates/agentd-testing",

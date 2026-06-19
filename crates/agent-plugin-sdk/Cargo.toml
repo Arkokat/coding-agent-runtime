@@ -1,0 +1,24 @@
+[package]
+name = "agentd-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Helper crate for agentd plugin authors: UDS client + Backend trait"
+
+[lints]
+workspace = true
+
+[dependencies]
+agentd-protocol = { path = "../agentd-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "io-util"] }
+thiserror.workspace = true
+async-trait.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+futures = "0.3"
