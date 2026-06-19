@@ -7,7 +7,8 @@
 use anyhow::Result;
 use clap::Parser;
 
-use agentd::cli::{Cli, Command, DaemonAction, PluginAction};
+use agentd::cli::{self, Cli, Command, DaemonAction, PluginAction};
+use agentd::paths;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -21,7 +22,51 @@ fn main() -> Result<()> {
         Command::Kill { id } => println!("agentd kill {id}: not yet implemented"),
         Command::Status { global, pane } => status(global, pane)?,
         Command::Plugin { action } => plugin(action),
-        Command::Init { .. } => println!("agentd init: not yet implemented"),
+        #[allow(clippy::if_not_else)]
+        Command::Init { yes } => {
+            let paths = paths::Paths::resolve();
+            if !cli::init::tmux_version_ok() {
+                eprintln!("agentd init: tmux not found or < 2.6. Install tmux and retry.");
+                std::process::exit(1);
+            }
+            if let Err(e) = cli::init::write_default_configs(&paths) {
+                eprintln!("agentd init: failed to write configs: {e}");
+                std::process::exit(1);
+            }
+            println!(
+                "Wrote {} and {}/plugins.toml",
+                paths.config_dir.join("config.toml").display(),
+                paths.config_dir.display()
+            );
+            println!();
+            println!("Add these lines to your ~/.tmux.conf:");
+            println!();
+            println!("{}", cli::init::tmux_conf_fragment());
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            if let Some(home) = home {
+                if !cli::init::tmux_conf_has_fragment(&home) {
+                    if yes {
+                        let path = home.join(".tmux.conf");
+                        if !path.exists() {
+                            let _ = std::fs::File::create(&path);
+                        }
+                        let backup = home.join(".tmux.conf.bak");
+                        let _ = std::fs::copy(&path, &backup);
+                        let mut body = std::fs::read_to_string(&path).unwrap_or_default();
+                        body.push('\n');
+                        body.push_str(&cli::init::tmux_conf_fragment());
+                        let _ = std::fs::write(&path, body);
+                        println!("Appended to {}", path.display());
+                    } else {
+                        println!("(Re-run with --yes to append automatically.)");
+                    }
+                } else {
+                    println!("(Fragment already present in ~/.tmux.conf — skipped.)");
+                }
+            }
+            println!();
+            println!("Next: agentd plugin install opencode");
+        }
         Command::Doctor => println!("agentd doctor: not yet implemented"),
         Command::Metrics { format } => {
             println!("agentd metrics --format {format}: not yet implemented")

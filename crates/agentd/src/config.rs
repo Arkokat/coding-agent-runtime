@@ -74,4 +74,9 @@ impl Config {
             Err(e) => Err(ConfigError::Io(path.to_path_buf(), e)),
         }
     }
+
+    /// Serialize to the default TOML we ship with `agentd init`.
+    pub fn default_serialized(&self) -> String {
+        toml::to_string_pretty(self).unwrap_or_else(|_| String::new())
+    }
 }
