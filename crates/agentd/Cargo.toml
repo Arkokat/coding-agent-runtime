@@ -33,7 +33,7 @@ async-trait.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-nix = { version = "0.27", features = ["fs", "socket"] }
+nix = { version = "0.27", features = ["fs", "socket", "user"] }
 sha2 = "0.10"
 
 [dev-dependencies]
