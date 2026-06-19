@@ -13,9 +13,7 @@ impl Harness {
     /// Create a new harness with a fresh temp dir.
     /// Creates the standard subdirs: `runtime/`, `state/`, `config/`.
     pub fn new() -> std::io::Result<Self> {
-        let root = tempfile::Builder::new()
-            .prefix("agentd-test-")
-            .tempdir()?;
+        let root = tempfile::Builder::new().prefix("agentd-test-").tempdir()?;
         std::fs::create_dir_all(root.path().join("runtime"))?;
         std::fs::create_dir_all(root.path().join("state"))?;
         std::fs::create_dir_all(root.path().join("config"))?;
