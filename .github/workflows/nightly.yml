@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: nightly
-  cancel-in-progress: false
+  group: nightly-${{ matrix.os }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
