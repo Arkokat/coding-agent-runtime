@@ -1,5 +1,5 @@
-use crate::db::repo::SessionRepo;
 use crate::db::Db;
+use crate::db::repo::SessionRepo;
 use agentd_protocol::SessionStatus;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -90,14 +90,22 @@ impl StatusCache {
     /// Aggregate line: `"5 agents · 2 waiting · 1 working · $0.42"`.
     pub fn format_global(&self) -> String {
         let g = self.global.read();
-        let working = g.by_status.get(&SessionStatus::Working).copied().unwrap_or(0);
+        let working = g
+            .by_status
+            .get(&SessionStatus::Working)
+            .copied()
+            .unwrap_or(0);
         let waiting = g
             .by_status
             .get(&SessionStatus::WaitingForUser)
             .copied()
             .unwrap_or(0);
         let idle = g.by_status.get(&SessionStatus::Idle).copied().unwrap_or(0);
-        let errored = g.by_status.get(&SessionStatus::Errored).copied().unwrap_or(0);
+        let errored = g
+            .by_status
+            .get(&SessionStatus::Errored)
+            .copied()
+            .unwrap_or(0);
         let cost = format!("${:.2}", g.cost_usd);
         format!(
             "{total} agents · {waiting} waiting · {working} working · {idle} idle · {errored} errored · {cost}",

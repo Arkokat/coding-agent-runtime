@@ -16,7 +16,7 @@ pub enum RepoError {
     InvalidStatus(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EventRecord {
     pub id: i64,
     pub session_id: Uuid,
@@ -25,7 +25,7 @@ pub struct EventRecord {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PluginRecord {
     pub name: String,
     pub binary: String,

@@ -47,7 +47,12 @@ fn format_pane_returns_empty_for_unknown_pane() {
 #[test]
 fn format_pane_returns_agent_and_task() {
     let db = fresh_db();
-    let _ = insert(&db, Some("%5"), SessionStatus::Working, Some("editing src/foo.rs"));
+    let _ = insert(
+        &db,
+        Some("%5"),
+        SessionStatus::Working,
+        Some("editing src/foo.rs"),
+    );
     let cache = StatusCache::new();
     cache.rebuild(&db).expect("rebuild");
     let s = cache.format_pane("%5");
@@ -81,5 +86,8 @@ fn rebuild_is_fast_under_500ms_for_100_sessions() {
     let t0 = std::time::Instant::now();
     cache.rebuild(&db).expect("rebuild");
     let dt = t0.elapsed();
-    assert!(dt < std::time::Duration::from_millis(500), "rebuild too slow: {dt:?}");
+    assert!(
+        dt < std::time::Duration::from_millis(500),
+        "rebuild too slow: {dt:?}"
+    );
 }

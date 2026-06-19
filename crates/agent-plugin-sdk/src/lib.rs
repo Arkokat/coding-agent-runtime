@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UnixStream;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Re-export the protocol version the SDK targets. Plugins built
 /// against this SDK send this version in `plugin.hello`.
@@ -180,8 +180,11 @@ impl AgentdClient {
 
     /// Liveness ping.
     pub async fn heartbeat(&mut self) -> Result<serde_json::Value, ClientError> {
-        self.call(agentd_protocol::Method::PLUGIN_HEARTBEAT, serde_json::json!({}))
-            .await
+        self.call(
+            agentd_protocol::Method::PLUGIN_HEARTBEAT,
+            serde_json::json!({}),
+        )
+        .await
     }
 
     /// Graceful disconnect.
@@ -223,7 +226,10 @@ impl AgentdClient {
                 "rpc error: {err}"
             ))));
         }
-        Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null))
+        Ok(resp
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
     }
 }
 

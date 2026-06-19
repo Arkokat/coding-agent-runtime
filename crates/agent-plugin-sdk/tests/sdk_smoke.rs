@@ -6,8 +6,14 @@ use std::path::PathBuf;
 #[tokio::test]
 async fn mock_backend_emits_scripted_events_in_order() {
     let mut be = MockBackend::new(vec![
-        Event { kind: "session.started".into(), payload: serde_json::json!({}) },
-        Event { kind: "session.status_changed".into(), payload: serde_json::json!({"status": "working"}) },
+        Event {
+            kind: "session.started".into(),
+            payload: serde_json::json!({}),
+        },
+        Event {
+            kind: "session.status_changed".into(),
+            payload: serde_json::json!({"status": "working"}),
+        },
     ]);
     let e1 = be.next_event().await.expect("e1");
     assert_eq!(e1.kind, "session.started");
@@ -18,7 +24,10 @@ async fn mock_backend_emits_scripted_events_in_order() {
 
 #[test]
 fn sdk_re_exports_protocol_version() {
-    assert_eq!(agentd_plugin_sdk::SDK_PROTOCOL_VERSION, agentd_protocol::PROTOCOL_VERSION);
+    assert_eq!(
+        agentd_plugin_sdk::SDK_PROTOCOL_VERSION,
+        agentd_protocol::PROTOCOL_VERSION
+    );
 }
 
 #[test]
