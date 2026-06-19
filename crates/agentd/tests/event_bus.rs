@@ -34,8 +34,14 @@ async fn multiple_subscribers_all_receive() {
         payload: json!({}),
         ts: chrono::Utc::now(),
     });
-    let e1 = timeout(Duration::from_millis(100), rx1.recv()).await.expect("t1").expect("r1");
-    let e2 = timeout(Duration::from_millis(100), rx2.recv()).await.expect("t2").expect("r2");
+    let e1 = timeout(Duration::from_millis(100), rx1.recv())
+        .await
+        .expect("t1")
+        .expect("r1");
+    let e2 = timeout(Duration::from_millis(100), rx2.recv())
+        .await
+        .expect("t2")
+        .expect("r2");
     assert_eq!(e1.kind, "session.started");
     assert_eq!(e2.kind, "session.started");
 }
