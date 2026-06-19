@@ -1,0 +1,5 @@
+---
+source: tests/snapshots.rs
+expression: SessionStatus::WaitingForUser
+---
+"waiting_for_user"

@@ -1,0 +1,31 @@
+---
+source: tests/snapshots.rs
+expression: all
+---
+[
+  "state.snapshot",
+  "session.create",
+  "session.rename",
+  "session.jump",
+  "session.kill",
+  "session.dismiss_error",
+  "session.get",
+  "session.events",
+  "daemon.status",
+  "daemon.shutdown",
+  "plugin.list",
+  "plugin.start",
+  "plugin.stop",
+  "plugin.install",
+  "plugin.update",
+  "plugin.remove",
+  "subscribe",
+  "unsubscribe",
+  "metrics",
+  "plugin.hello",
+  "session.report_event",
+  "session.discover",
+  "plugin.heartbeat",
+  "plugin.bye",
+  "event"
+]

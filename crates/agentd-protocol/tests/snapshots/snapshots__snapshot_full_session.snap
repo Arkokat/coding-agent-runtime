@@ -1,0 +1,25 @@
+---
+source: tests/snapshots.rs
+expression: session
+---
+{
+  "id": "019065a1-7c9a-7def-8a1b-1234567890ab",
+  "agent_type": "opencode",
+  "working_dir": "/Users/me/projects/agentd",
+  "tmux_session": "agentd-019065a1",
+  "tmux_pane_id": "%5",
+  "display_name": "agentd",
+  "status": "working",
+  "current_task": "editing src/main.rs",
+  "model": "claude-sonnet-4-5",
+  "context_used_tokens": 42000,
+  "context_total_tokens": 200000,
+  "cost_usd": 0.12,
+  "source": "cli",
+  "created_at": "2026-06-18T12:00:00Z",
+  "last_event_at": "2026-06-18T12:05:30Z",
+  "metadata": {
+    "agent_version": "1.2.3",
+    "git_branch": "main"
+  }
+}

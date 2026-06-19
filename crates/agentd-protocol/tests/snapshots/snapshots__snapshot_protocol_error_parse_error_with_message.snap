@@ -1,0 +1,8 @@
+---
+source: tests/snapshots.rs
+expression: e
+---
+{
+  "code": -32700,
+  "message": "bad json"
+}

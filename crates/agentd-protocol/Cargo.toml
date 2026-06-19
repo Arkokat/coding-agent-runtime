@@ -17,3 +17,6 @@ serde_json.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+insta = { version = "1.40", features = ["json"] }
