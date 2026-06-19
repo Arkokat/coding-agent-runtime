@@ -3,9 +3,14 @@
 #![warn(missing_docs)]
 
 mod harness;
+/// HTTP mock server for plugin tests. Replays scripted responses per scenario.
+pub mod http_mock;
+mod scenario;
 pub mod test_agent;
 
 pub use harness::Harness;
+pub use http_mock::{Handle as HttpMockHandle, HttpMock};
+pub use scenario::{RequestMatch, Response, Scenario, ScenarioStep};
 pub use test_agent::{Script, ScriptAction};
 
 /// Return the testing crate version.
