@@ -6,16 +6,20 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: nightly-${{ matrix.os }}
-  cancel-in-progress: true
+  group: nightly
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: 10
   RUSTFLAGS: -D warnings
 
 jobs:
   test:
     name: nightly (${{ matrix.os }})
+    concurrency:
+      group: nightly-${{ matrix.os }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
