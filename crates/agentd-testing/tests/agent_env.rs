@@ -10,7 +10,10 @@ fn opencode_env_sets_openai_base_url() {
         .get_envs()
         .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
         .collect();
-    assert!(envs.iter().any(|(k, v)| k == "OPENAI_BASE_URL" && v == "http://127.0.0.1:1234"));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "OPENAI_BASE_URL" && v == "http://127.0.0.1:1234")
+    );
 }
 
 #[test]
@@ -22,7 +25,10 @@ fn claude_code_env_sets_anthropic_base_url() {
         .get_envs()
         .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
         .collect();
-    assert!(envs.iter().any(|(k, v)| k == "ANTHROPIC_BASE_URL" && v == "http://127.0.0.1:5678"));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "ANTHROPIC_BASE_URL" && v == "http://127.0.0.1:5678")
+    );
 }
 
 #[test]
@@ -34,7 +40,10 @@ fn codex_env_sets_openai_base_url() {
         .get_envs()
         .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
         .collect();
-    assert!(envs.iter().any(|(k, v)| k == "OPENAI_BASE_URL" && v == "http://127.0.0.1:9999"));
+    assert!(
+        envs.iter()
+            .any(|(k, v)| k == "OPENAI_BASE_URL" && v == "http://127.0.0.1:9999")
+    );
 }
 
 #[test]

@@ -43,5 +43,8 @@ status = 200
 body = '{"content":[],"stop_reason":"end_turn"}'
 "#;
     let s: Scenario = toml::from_str(toml).expect("parse");
-    assert_eq!(s.steps[0].request.body_hash.as_deref(), Some("sha256:abc123"));
+    assert_eq!(
+        s.steps[0].request.body_hash.as_deref(),
+        Some("sha256:abc123")
+    );
 }

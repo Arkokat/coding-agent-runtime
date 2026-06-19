@@ -1,10 +1,10 @@
 use axum::{
+    Router,
     body::Body,
     extract::Request,
     http::StatusCode,
     response::{IntoResponse, Response as AxumResponse},
     routing::any,
-    Router,
 };
 use parking_lot::Mutex;
 use std::net::SocketAddr;
@@ -59,7 +59,9 @@ pub struct HttpMock {
 impl HttpMock {
     /// Construct a new mock with the given scenarios.
     pub fn new(scenarios: Vec<Scenario>) -> Self {
-        Self { scenarios: Arc::new(Mutex::new(scenarios)) }
+        Self {
+            scenarios: Arc::new(Mutex::new(scenarios)),
+        }
     }
 
     /// Start the mock server. Returns the base URL and a handle for shutdown.
@@ -72,12 +74,18 @@ impl HttpMock {
         let (tx, rx) = oneshot::channel();
         let join = tokio::spawn(async move {
             let server = axum::serve(listener, app);
-            let _ = server.with_graceful_shutdown(async move {
-                let _ = rx.await;
-            }).await;
+            let _ = server
+                .with_graceful_shutdown(async move {
+                    let _ = rx.await;
+                })
+                .await;
         });
 
-        Ok(Handle { addr, shutdown: Some(tx), join: Some(join) })
+        Ok(Handle {
+            addr,
+            shutdown: Some(tx),
+            join: Some(join),
+        })
     }
 }
 

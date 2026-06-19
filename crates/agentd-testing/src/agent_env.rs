@@ -11,19 +11,31 @@ pub struct AgentEnv {
 impl AgentEnv {
     /// opencode -> `OPENAI_BASE_URL`
     pub fn for_opencode(base_url: impl Into<String>) -> Self {
-        Self { agent: "opencode", base_url: base_url.into() }
+        Self {
+            agent: "opencode",
+            base_url: base_url.into(),
+        }
     }
     /// Claude Code -> `ANTHROPIC_BASE_URL`
     pub fn for_claude_code(base_url: impl Into<String>) -> Self {
-        Self { agent: "claude-code", base_url: base_url.into() }
+        Self {
+            agent: "claude-code",
+            base_url: base_url.into(),
+        }
     }
     /// Codex -> `OPENAI_BASE_URL`
     pub fn for_codex(base_url: impl Into<String>) -> Self {
-        Self { agent: "codex", base_url: base_url.into() }
+        Self {
+            agent: "codex",
+            base_url: base_url.into(),
+        }
     }
     /// Aider -> `--openai-api-base` flag (not env var)
     pub fn for_aider(base_url: impl Into<String>) -> Self {
-        Self { agent: "aider", base_url: base_url.into() }
+        Self {
+            agent: "aider",
+            base_url: base_url.into(),
+        }
     }
 
     /// Apply the env var(s) to a `Command` so the agent process points at the mock.
@@ -34,8 +46,12 @@ impl AgentEnv {
     /// (`opencode`, `codex`, `claude-code`, `aider`).
     pub fn apply_to_command(&self, cmd: &mut Command) {
         match self.agent {
-            "opencode" | "codex" => { cmd.env("OPENAI_BASE_URL", &self.base_url); }
-            "claude-code" => { cmd.env("ANTHROPIC_BASE_URL", &self.base_url); }
+            "opencode" | "codex" => {
+                cmd.env("OPENAI_BASE_URL", &self.base_url);
+            }
+            "claude-code" => {
+                cmd.env("ANTHROPIC_BASE_URL", &self.base_url);
+            }
             "aider" => { /* uses extra_args, no env var */ }
             other => panic!("unknown agent: {other}"),
         }
