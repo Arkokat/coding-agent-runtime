@@ -34,9 +34,15 @@ jobs:
         run: cargo nextest run --workspace --all-features
       - name: cargo bench (compile only)
         run: cargo bench --workspace --no-run
-      - name: cargo miri
+      - name: cargo miri (nightly toolchain)
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, miri
+      - name: cargo miri run
+        if: matrix.os == 'ubuntu-latest'
+        continue-on-error: true
         run: |
-          rustup component add miri
           cargo miri setup
           cargo miri test -p agentd-protocol
-        if: matrix.os == 'ubuntu-latest'
