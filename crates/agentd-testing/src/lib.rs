@@ -3,8 +3,10 @@
 #![warn(missing_docs)]
 
 mod harness;
+pub mod test_agent;
 
 pub use harness::Harness;
+pub use test_agent::{Script, ScriptAction};
 
 /// Return the testing crate version.
 pub fn version() -> &'static str {
