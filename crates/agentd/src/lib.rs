@@ -1,0 +1,15 @@
+//! agentd: daemon + CLI for orchestrating coding-agent sessions inside tmux.
+//!
+//! This crate exposes both a library (for tests and future in-workspace
+//! consumers) and a single binary `agentd` whose entry point is
+//! `src/main.rs`. The AGENTS.md "no library output" rule is intentionally
+//! relaxed to allow `use agentd::...` in integration tests across Plan 2.
+
+pub mod cli;
+pub mod config;
+pub mod db;
+pub mod handlers;
+pub mod ipc;
+pub mod paths;
+pub mod plugins_manifest;
+pub mod state;

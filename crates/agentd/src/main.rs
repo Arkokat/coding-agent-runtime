@@ -7,16 +7,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-pub mod cli;
-pub mod config;
-pub mod db;
-pub mod handlers;
-pub mod ipc;
-pub mod paths;
-pub mod plugins_manifest;
-pub mod state;
-
-use cli::{Cli, Command, DaemonAction, PluginAction};
+use agentd::cli::{Cli, Command, DaemonAction, PluginAction};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
