@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
       - name: cargo nextest (all features)
         run: cargo nextest run --workspace --all-features
       - name: cargo bench (compile only)
