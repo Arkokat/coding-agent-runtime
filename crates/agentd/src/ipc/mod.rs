@@ -2,3 +2,4 @@
 
 pub mod control;
 pub mod framing;
+pub mod plugin;
