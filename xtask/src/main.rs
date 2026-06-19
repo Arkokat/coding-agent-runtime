@@ -1,7 +1,10 @@
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "help" {
-        println!("xtask {} — build automation for agentd", env!("CARGO_PKG_VERSION"));
+        println!(
+            "xtask {} — build automation for agentd",
+            env!("CARGO_PKG_VERSION")
+        );
         println!();
         println!("Subcommands (added in later plans):");
         println!("  fmt           Run cargo fmt --check");
