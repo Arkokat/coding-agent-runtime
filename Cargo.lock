@@ -12,6 +12,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "futures",
  "libc",
  "nix",
  "parking_lot",

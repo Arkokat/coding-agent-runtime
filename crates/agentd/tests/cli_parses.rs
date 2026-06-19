@@ -36,8 +36,9 @@ fn parses_status_pane() {
         .env("AGENTD_QUIET", "1")
         .output()
         .expect("run");
+    // With no running daemon and no DB, status --pane prints an empty line.
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("status --pane %5"), "got: {stdout}");
+    assert!(stdout.trim().is_empty(), "got: {stdout:?}");
 }
 
 #[test]
