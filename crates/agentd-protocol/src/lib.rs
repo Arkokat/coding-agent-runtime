@@ -11,7 +11,7 @@ mod error;
 mod status;
 mod version;
 
-pub use error::ProtocolError;
+pub use error::{ProtocolError, ProtocolErrorWithMessage};
 pub use status::SessionStatus;
 pub use version::PROTOCOL_VERSION;
 
