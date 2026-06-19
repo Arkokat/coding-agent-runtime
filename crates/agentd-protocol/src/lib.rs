@@ -7,8 +7,12 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+mod error;
+mod status;
 mod version;
 
+pub use error::ProtocolError;
+pub use status::SessionStatus;
 pub use version::PROTOCOL_VERSION;
 
 /// Return the protocol crate version string.
@@ -23,5 +27,20 @@ mod tests {
     #[test]
     fn version_is_set() {
         assert_eq!(version(), "0.1.0");
+    }
+
+    #[test]
+    fn all_statuses_returns_six_variants() {
+        assert_eq!(SessionStatus::ALL.len(), 6);
+    }
+
+    #[test]
+    fn only_finished_is_terminal() {
+        assert!(SessionStatus::Finished.is_terminal());
+        for s in SessionStatus::ALL {
+            if *s != SessionStatus::Finished {
+                assert!(!s.is_terminal(), "{s} should not be terminal");
+            }
+        }
     }
 }
