@@ -36,10 +36,18 @@ impl Db {
     }
 
     fn apply_pragmas(&self) -> Result<(), DbError> {
-        self.conn.pragma_update(None, "journal_mode", "WAL").map_err(DbError::Pragma)?;
-        self.conn.pragma_update(None, "synchronous", "NORMAL").map_err(DbError::Pragma)?;
-        self.conn.pragma_update(None, "foreign_keys", "ON").map_err(DbError::Pragma)?;
-        self.conn.pragma_update(None, "busy_timeout", 5000).map_err(DbError::Pragma)?;
+        self.conn
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(DbError::Pragma)?;
+        self.conn
+            .pragma_update(None, "synchronous", "NORMAL")
+            .map_err(DbError::Pragma)?;
+        self.conn
+            .pragma_update(None, "foreign_keys", "ON")
+            .map_err(DbError::Pragma)?;
+        self.conn
+            .pragma_update(None, "busy_timeout", 5000)
+            .map_err(DbError::Pragma)?;
         Ok(())
     }
 

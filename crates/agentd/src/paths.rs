@@ -55,8 +55,8 @@ impl Paths {
             },
             PathBuf::from,
         );
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map_or_else(|| data.join("runtime"), PathBuf::from);
+        let runtime =
+            std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| data.join("runtime"), PathBuf::from);
 
         Self::from_base(
             &cfg.join("agentd"),

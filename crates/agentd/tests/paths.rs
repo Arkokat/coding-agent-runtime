@@ -10,7 +10,10 @@ fn resolve_with_uses_xdg_layout_under_root() {
     assert_eq!(paths.state_dir, root.path().join("state"));
     assert_eq!(paths.cache_dir, root.path().join("cache"));
     assert_eq!(paths.runtime_dir, root.path().join("runtime"));
-    assert_eq!(paths.control_socket_path, root.path().join("runtime/control.sock"));
+    assert_eq!(
+        paths.control_socket_path,
+        root.path().join("runtime/control.sock")
+    );
     assert_eq!(paths.state_db_path, root.path().join("state/state.db"));
     assert_eq!(paths.lock_path, root.path().join("runtime/daemon.lock"));
     assert_eq!(paths.log_dir, root.path().join("state/logs"));

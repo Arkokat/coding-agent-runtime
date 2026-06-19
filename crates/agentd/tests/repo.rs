@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, unused_mut)]
 
-use agentd::db::{Db, repo::{EventRepo, PluginRepo, SessionRepo}};
+use agentd::db::{
+    Db,
+    repo::{EventRepo, PluginRepo, SessionRepo},
+};
 use agentd_protocol::{AgentType, Session, SessionSource, SessionStatus};
 use chrono::Utc;
 use uuid::Uuid;
@@ -39,7 +42,10 @@ fn session_insert_and_get_roundtrip() {
     let db = fresh_db();
     let s = sample_session();
     SessionRepo::new(&db).insert(&s).expect("insert");
-    let got = SessionRepo::new(&db).get(&s.id).expect("get").expect("present");
+    let got = SessionRepo::new(&db)
+        .get(&s.id)
+        .expect("get")
+        .expect("present");
     assert_eq!(got.id, s.id);
     assert_eq!(got.working_dir, s.working_dir);
     assert_eq!(got.status, SessionStatus::Starting);
@@ -78,7 +84,8 @@ fn session_update_status_writes_last_event_at() {
     let repo = SessionRepo::new(&db);
     let s = sample_session();
     repo.insert(&s).expect("insert");
-    repo.update_status(&s.id, SessionStatus::Working).expect("update");
+    repo.update_status(&s.id, SessionStatus::Working)
+        .expect("update");
     let got = repo.get(&s.id).expect("get").expect("present");
     assert_eq!(got.status, SessionStatus::Working);
     assert!(got.last_event_at.is_some());
@@ -92,8 +99,10 @@ fn session_update_tmux_uses_unique_index() {
     let b = sample_session();
     repo.insert(&a).expect("insert a");
     repo.insert(&b).expect("insert b");
-    repo.update_tmux(&a.id, Some("s1"), Some("%1")).expect("a tmux");
-    repo.update_tmux(&b.id, Some("s2"), Some("%1")).expect("b tmux");
+    repo.update_tmux(&a.id, Some("s1"), Some("%1"))
+        .expect("a tmux");
+    repo.update_tmux(&b.id, Some("s2"), Some("%1"))
+        .expect("b tmux");
     let got_a = repo.get(&a.id).expect("get a").expect("present");
     let got_b = repo.get(&b.id).expect("get b").expect("present");
     assert_eq!(got_a.tmux_pane_id.as_deref(), Some("%1"));
@@ -124,8 +133,12 @@ fn event_cascade_deletes_with_session() {
     let erepo = EventRepo::new(&db);
     let s = sample_session();
     srepo.insert(&s).expect("insert");
-    erepo.insert(&s.id, "session.started", &serde_json::json!({})).expect("e");
-    db.conn().execute("DELETE FROM sessions WHERE id = ?1", [s.id.to_string()]).expect("delete");
+    erepo
+        .insert(&s.id, "session.started", &serde_json::json!({}))
+        .expect("e");
+    db.conn()
+        .execute("DELETE FROM sessions WHERE id = ?1", [s.id.to_string()])
+        .expect("delete");
     assert!(erepo.list_for_session(&s.id).expect("list").is_empty());
 }
 
@@ -133,11 +146,23 @@ fn event_cascade_deletes_with_session() {
 fn plugin_upsert_and_list() {
     let db = fresh_db();
     let prepo = PluginRepo::new(&db);
-    prepo.upsert("opencode", "agentd-plugin-opencode", "opencode.sock", true).expect("upsert");
-    prepo.upsert("claude-code", "agentd-plugin-claude-code", "claude-code.sock", true).expect("upsert");
+    prepo
+        .upsert("opencode", "agentd-plugin-opencode", "opencode.sock", true)
+        .expect("upsert");
+    prepo
+        .upsert(
+            "claude-code",
+            "agentd-plugin-claude-code",
+            "claude-code.sock",
+            true,
+        )
+        .expect("upsert");
     let list = prepo.list().expect("list");
     assert_eq!(list.len(), 2);
-    let oc = list.iter().find(|p| p.name == "opencode").expect("opencode");
+    let oc = list
+        .iter()
+        .find(|p| p.name == "opencode")
+        .expect("opencode");
     assert_eq!(oc.binary, "agentd-plugin-opencode");
     assert!(oc.autostart);
 }

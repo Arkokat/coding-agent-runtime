@@ -67,7 +67,9 @@ impl Config {
     /// Load from a TOML file. Missing file → defaults.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
-            Ok(body) => toml::from_str(&body).map_err(|e| ConfigError::Parse(path.to_path_buf(), e)),
+            Ok(body) => {
+                toml::from_str(&body).map_err(|e| ConfigError::Parse(path.to_path_buf(), e))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(ConfigError::Io(path.to_path_buf(), e)),
         }

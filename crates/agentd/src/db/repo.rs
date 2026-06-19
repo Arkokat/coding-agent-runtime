@@ -210,12 +210,7 @@ impl<'a> EventRepo<'a> {
         Self { db }
     }
 
-    pub fn insert(
-        &self,
-        session_id: &Uuid,
-        kind: &str,
-        payload: &Value,
-    ) -> Result<i64, RepoError> {
+    pub fn insert(&self, session_id: &Uuid, kind: &str, payload: &Value) -> Result<i64, RepoError> {
         self.db.conn().execute(
             "INSERT INTO session_events (session_id, type, payload) VALUES (?1, ?2, ?3)",
             params![session_id.to_string(), kind, payload.to_string()],
@@ -239,7 +234,11 @@ impl<'a> EventRepo<'a> {
             Ok(EventRecord {
                 id,
                 session_id: Uuid::parse_str(&sid).map_err(|e| {
-                    SqliteError::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+                    SqliteError::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
                 })?,
                 kind,
                 payload: serde_json::from_str(&payload).unwrap_or(Value::Null),
@@ -388,7 +387,7 @@ fn agent_type_from_str(s: &str) -> Result<agentd_protocol::AgentType, SqliteErro
                 1,
                 rusqlite::types::Type::Text,
                 format!("unknown agent_type: {other}").into(),
-            ))
+            ));
         }
     })
 }
@@ -407,7 +406,7 @@ fn status_from_str(s: &str) -> Result<SessionStatus, SqliteError> {
                 6,
                 rusqlite::types::Type::Text,
                 format!("invalid status: {other}").into(),
-            ))
+            ));
         }
     })
 }
