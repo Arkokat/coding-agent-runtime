@@ -38,11 +38,10 @@ pub fn test() -> ! {
 }
 
 /// Run fmt → clippy → test. Fails fast.
+#[allow(unreachable_code)] // each subcommand is `-> !`, so the chain is "unreachable" by lint rules
 pub fn ci() -> ! {
-    eprintln!("xtask: step 1/3: fmt");
+    eprintln!("xtask: ci (fmt → clippy → test)");
     fmt();
-    eprintln!("xtask: step 2/3: clippy");
     clippy();
-    eprintln!("xtask: step 3/3: test");
     test();
 }

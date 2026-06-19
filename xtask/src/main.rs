@@ -12,7 +12,7 @@ fn main() {
         Some("clippy") => cmd::clippy(),
         Some("test") => cmd::test(),
         Some("ci") => cmd::ci(),
-        Some("help") | Some("-h") | Some("--help") | None => print_help(),
+        Some("help" | "-h" | "--help") | None => print_help(),
         Some(other) => {
             eprintln!("xtask: unknown subcommand: {other}");
             eprintln!("Run `cargo xtask help` for the list.");
