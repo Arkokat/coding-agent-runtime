@@ -14,4 +14,5 @@ pub mod ipc;
 pub mod paths;
 pub mod plugins_manifest;
 pub mod state;
+pub mod status;
 pub mod tmux;
