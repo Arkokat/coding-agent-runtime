@@ -1,0 +1,41 @@
+[package]
+name = "agentd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Daemon + CLI for orchestrating coding-agent sessions inside tmux"
+
+[[bin]]
+name = "agentd"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+agentd-protocol = { path = "../agentd-protocol" }
+agentd-testing = { path = "../agentd-testing", optional = true }
+clap = { workspace = true, features = ["env"] }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "signal", "time", "fs", "process"] }
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+libc = "0.2"
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+nix = { version = "0.27", features = ["fs", "socket"] }
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
