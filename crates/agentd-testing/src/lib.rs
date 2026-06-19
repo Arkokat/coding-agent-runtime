@@ -1,13 +1,10 @@
 //! agentd-testing: test harness for agentd plugins and daemon.
-//!
-//! Provides (added in later tasks of this plan):
-//! - `Harness` — temp dir, XDG layout, cleanup on drop
-//! - `test_agent` binary — fixture that emits scripted events
-//! - `HttpMock` — axum-based server that replays canned responses per scenario
-//! - `ScriptedSession` — fluent builder for common test flows
-//! - `AgentEnv` — per-agent base URL helpers
 
 #![warn(missing_docs)]
+
+mod harness;
+
+pub use harness::Harness;
 
 /// Return the testing crate version.
 pub fn version() -> &'static str {
