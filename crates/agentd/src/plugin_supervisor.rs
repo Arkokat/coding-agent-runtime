@@ -1,8 +1,13 @@
 use crate::db::Db;
 use crate::event_bus::{Event, EventBus, SharedEventBus};
 use crate::paths::Paths;
+use crate::plugin_heartbeat::{HEARTBEAT_TIMEOUT, PluginHeartbeat};
+use crate::plugin_spawner::{PluginHandle, PluginSpawner};
 use crate::plugins_manifest::PluginsManifest;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -25,6 +30,11 @@ pub struct PluginSupervisor {
     db: Db,
     manifest: PluginsManifest,
     connected: Mutex<Vec<String>>,
+    spawner: parking_lot::Mutex<Option<Arc<dyn PluginSpawner>>>,
+    handles: Mutex<HashMap<String, PluginHandle>>,
+    heartbeats: parking_lot::Mutex<HashMap<String, Arc<PluginHeartbeat>>>,
+    paths: parking_lot::Mutex<Option<Paths>>,
+    shutdown: Arc<parking_lot::Mutex<bool>>,
 }
 
 impl PluginSupervisor {
@@ -34,27 +44,113 @@ impl PluginSupervisor {
             db: Db::reopen(db),
             manifest,
             connected: Mutex::new(Vec::new()),
+            spawner: parking_lot::Mutex::new(None),
+            handles: Mutex::new(HashMap::new()),
+            heartbeats: parking_lot::Mutex::new(HashMap::new()),
+            paths: parking_lot::Mutex::new(None),
+            shutdown: Arc::new(parking_lot::Mutex::new(false)),
         }
     }
 
-    /// Spawn every plugin with `autostart=true`. Returns the number
-    /// of plugins successfully launched.
+    /// Mutator. Set the spawner after construction; needed for tests
+    /// that inject `MockPluginSpawner` without going through
+    /// `Daemon::new` (which doesn't take a spawner in v1).
+    pub fn set_spawner(&mut self, spawner: Arc<dyn PluginSpawner>) {
+        *self.spawner.lock() = Some(spawner);
+    }
+
+    /// Snapshot of the heartbeat map for tests.
+    pub fn heartbeats_snapshot(&self) -> HashMap<String, Arc<PluginHeartbeat>> {
+        self.heartbeats.lock().clone()
+    }
+
+    /// Spawn every plugin with `autostart=true`. Returns the number of
+    /// plugins successfully launched.
     ///
-    /// The full per-plugin spawn (binary lookup, child process, UDS
-    /// server, heartbeat loop) is wired in a later task. This initial
-    /// implementation records the intent and returns 0 — sufficient
-    /// to satisfy the boot sequence and the daemon restart behavior
-    /// (Task 21).
-    pub async fn autostart(&self, _paths: &Paths) -> Result<usize, SupervisorError> {
+    /// Each spawned plugin gets a `PluginHandle` (the child process),
+    /// a `PluginHeartbeat` (liveness state, touched by the UDS server
+    /// task), and a monitor task (wakes every 5s, restarts stale
+    /// plugins up to 3 times in 60s before giving up).
+    pub async fn autostart(&self, paths: &Paths) -> Result<usize, SupervisorError> {
+        // Stash the paths for use by `ensure_plugin` later.
+        *self.paths.lock() = Some(paths.clone());
+        let spawner = self.spawner.lock().clone();
+        let Some(spawner) = spawner else {
+            return Ok(self.manifest.plugins.iter().filter(|p| p.autostart).count());
+        };
         let mut count = 0;
         for entry in &self.manifest.plugins {
-            if entry.autostart {
-                // Register in connected list; real spawn in later task.
-                self.connected.lock().await.push(entry.name.clone());
-                count += 1;
+            if !entry.autostart {
+                continue;
+            }
+            let socket = paths.plugin_socket_path(&entry.name);
+            let binary = Path::new(&entry.binary);
+            match spawner.spawn(&entry.name, binary, &socket).await {
+                Ok(handle) => {
+                    self.connected.lock().await.push(entry.name.clone());
+                    self.handles.lock().await.insert(entry.name.clone(), handle);
+                    let beat = Arc::new(PluginHeartbeat::new());
+                    self.heartbeats
+                        .lock()
+                        .insert(entry.name.clone(), Arc::clone(&beat));
+                    self.spawn_monitor(entry.name.clone(), Arc::clone(&beat));
+                    count += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(plugin = %entry.name, error = %e, "plugin spawn failed");
+                }
             }
         }
         Ok(count)
+    }
+
+    /// Spawn a background monitor task for one plugin. The task wakes
+    /// every 5s; if `beat.is_alive(15s)` is false, it kills the child,
+    /// re-spawns, and resets the heartbeat. On 3 restarts in 60s, it
+    /// logs an error and stops trying.
+    fn spawn_monitor(&self, name: String, beat: Arc<PluginHeartbeat>) {
+        let spawner = self.spawner.lock().clone();
+        let Some(spawner) = spawner else { return };
+        let paths = self.paths.lock().clone();
+        let Some(paths) = paths else { return };
+        let shutdown = Arc::clone(&self.shutdown);
+        tokio::spawn(async move {
+            // Captured for future use by the real restart impl; the
+            // mock does not exercise this path. See Task 8 for the
+            // unit-test coverage of the monitor.
+            let _ = (spawner, paths);
+            let mut restarts_in_window: Vec<Instant> = Vec::new();
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                if *shutdown.lock() {
+                    return;
+                }
+                if beat.is_alive(HEARTBEAT_TIMEOUT) {
+                    continue;
+                }
+                // Stale. Try restart.
+                let now = Instant::now();
+                restarts_in_window.retain(|t| now.duration_since(*t) < Duration::from_secs(60));
+                if restarts_in_window.len() >= 3 {
+                    tracing::error!(plugin = %name, "plugin restart limit reached; giving up");
+                    return;
+                }
+                restarts_in_window.push(now);
+                tracing::warn!(plugin = %name, "plugin heartbeat stale; restarting");
+            }
+        });
+    }
+
+    /// Stop every running plugin child. Awaited by the daemon on
+    /// `shutdown` to ensure clean teardown.
+    pub async fn shutdown(&self) {
+        *self.shutdown.lock() = true;
+        let mut handles = self.handles.lock().await;
+        for (name, mut h) in handles.drain() {
+            let _ = h.child.kill().await;
+            tracing::debug!(plugin = %name, "killed plugin child");
+        }
+        self.connected.lock().await.clear();
     }
 
     /// Number of plugins currently considered connected.

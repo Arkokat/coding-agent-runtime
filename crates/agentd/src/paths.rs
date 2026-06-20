@@ -98,6 +98,11 @@ impl Paths {
         }
     }
 
+    /// Per-plugin UDS path: `$XDG_RUNTIME_DIR/agentd/plugin-<name>.sock`.
+    pub fn plugin_socket_path(&self, name: &str) -> PathBuf {
+        self.runtime_dir.join(format!("plugin-{name}.sock"))
+    }
+
     /// Create all directories (idempotent).
     pub fn ensure(&self) -> io::Result<()> {
         for d in [

@@ -1,62 +1,87 @@
 #![allow(clippy::expect_used)]
 
-use std::time::Duration;
+use parking_lot::Mutex;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use agentd::db::Db;
 use agentd::event_bus::EventBus;
 use agentd::paths::Paths;
+use agentd::plugin_spawner::{MockPluginSpawner, PluginSpawner};
 use agentd::plugin_supervisor::PluginSupervisor;
-use agentd::plugins_manifest::PluginsManifest;
-use tempfile::TempDir;
+use agentd_testing::test_runtime_dir;
 
-fn fresh_paths() -> (TempDir, Paths) {
-    let root = TempDir::new().expect("tempdir");
-    let paths = Paths::resolve_with(root.path());
-    paths.ensure().expect("ensure");
-    (root, paths)
+#[allow(unsafe_code)]
+fn fresh(label: &str) -> (Paths, Db, EventBus) {
+    let dir = test_runtime_dir().join(format!("plugin-supervisor-real-{label}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create");
+    // SAFETY: `set_var` is `unsafe` under Rust 2024. Tests are single-threaded
+    // at this point and we set XDG paths once before resolving `Paths`.
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    }
+    let paths = Paths::resolve();
+    let db = Db::open(&paths.state_db_path).expect("open");
+    agentd::db::migrations::run(&db).expect("migrate");
+    (paths, db, EventBus::default())
+}
+
+fn two_plugin_manifest() -> agentd::plugins_manifest::PluginsManifest {
+    let toml = r#"
+[[plugins]]
+name = "opencode"
+binary = "/usr/bin/true"
+autostart = true
+
+[[plugins]]
+name = "claude-code"
+binary = "/usr/bin/true"
+autostart = true
+"#;
+    toml::from_str(toml).expect("parse manifest")
 }
 
 #[tokio::test]
-async fn supervisor_can_be_constructed_with_empty_manifest() {
-    let (_root, paths) = fresh_paths();
-    let bus = EventBus::default();
-    let db = agentd::db::Db::open(&paths.state_db_path).expect("db");
-    agentd::db::migrations::run(&db).expect("migrate");
-    let m = PluginsManifest::default();
-    let sup = PluginSupervisor::new(bus, &db, m);
-    assert_eq!(sup.connected_count(), 0);
+async fn autostart_spawns_every_plugin_in_manifest() {
+    let (paths, db, bus) = fresh("spawns");
+    let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
+    let mut sup = PluginSupervisor::new(bus, &db, two_plugin_manifest());
+    sup.set_spawner(spawner);
+    let n = sup.autostart(&paths).await.expect("autostart");
+    assert_eq!(n, 2, "both plugins should have been spawned");
+
+    let recorded = calls.lock().clone();
+    let names: Vec<String> = recorded.iter().map(|c| c.0.clone()).collect();
+    assert!(names.contains(&"opencode".to_string()));
+    assert!(names.contains(&"claude-code".to_string()));
+
+    let beats = sup.heartbeats_snapshot();
+    assert!(beats.contains_key("opencode"));
+    assert!(beats.contains_key("claude-code"));
+
+    sup.shutdown().await;
 }
 
 #[tokio::test]
-async fn autostart_skips_when_no_autostart_entries() {
-    let (_root, paths) = fresh_paths();
-    let bus = EventBus::default();
-    let db = agentd::db::Db::open(&paths.state_db_path).expect("db");
-    agentd::db::migrations::run(&db).expect("migrate");
-    let m = PluginsManifest::default();
-    let sup = PluginSupervisor::new(bus, &db, m);
-    // No real Tmux needed: autostart is a no-op when manifest is empty.
-    let started = sup.autostart(&paths).await.expect("autostart");
-    assert_eq!(started, 0);
-}
-
-#[tokio::test]
-async fn event_bus_round_trip_through_supervisor() {
-    let (_root, paths) = fresh_paths();
-    let bus = EventBus::default();
-    let db = agentd::db::Db::open(&paths.state_db_path).expect("db");
-    agentd::db::migrations::run(&db).expect("migrate");
-    let m = PluginsManifest::default();
-    let sup = PluginSupervisor::new(bus, &db, m);
-    let mut rx = sup.subscribe();
-    sup.bus().emit(agentd::event_bus::Event {
-        kind: "session.status_changed".into(),
-        session_id: None,
-        payload: serde_json::json!({"status": "working"}),
-        ts: chrono::Utc::now(),
-    });
-    let got = tokio::time::timeout(Duration::from_millis(100), rx.recv())
-        .await
-        .expect("not timed out")
-        .expect("not lagged");
-    assert_eq!(got.kind, "session.status_changed");
+async fn autostart_skips_non_autostart_plugins() {
+    let (paths, db, bus) = fresh("skips");
+    let toml = r#"
+[[plugins]]
+name = "opencode"
+binary = "/usr/bin/true"
+autostart = false
+"#;
+    let manifest: agentd::plugins_manifest::PluginsManifest = toml::from_str(toml).expect("parse");
+    let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
+    let mut sup = PluginSupervisor::new(bus, &db, manifest);
+    sup.set_spawner(spawner);
+    let n = sup.autostart(&paths).await.expect("autostart");
+    assert_eq!(n, 0);
+    assert!(calls.lock().is_empty());
 }
