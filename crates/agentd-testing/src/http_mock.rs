@@ -27,6 +27,21 @@ pub fn hash_body(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
+/// Fixed TCP bind address used by `HttpMock::start` and the fixture tests.
+///
+/// Pinned to a specific port (instead of `127.0.0.1:0` OS-pick) so the host's
+/// sandbox can allow-list one concrete port. Default `127.0.0.1:31415`; override
+/// with the `AGENTD_TEST_PORT` env var if that port is taken or blocked:
+/// `AGENTD_TEST_PORT=18932 cargo test -p agentd-testing`.
+pub fn test_bind_addr() -> String {
+    if let Ok(p) = std::env::var("AGENTD_TEST_PORT") {
+        if let Ok(port) = p.parse::<u16>() {
+            return format!("127.0.0.1:{port}");
+        }
+    }
+    "127.0.0.1:31415".to_string()
+}
+
 /// Handle to a running mock server. Drop to stop, or call `stop`.
 pub struct Handle {
     addr: SocketAddr,
@@ -62,7 +77,8 @@ impl Drop for Handle {
     }
 }
 
-/// HTTP mock server. Binds to `127.0.0.1:0` and replays scripted responses.
+/// HTTP mock server. Binds to `test_bind_addr()` (default `127.0.0.1:31415`)
+/// and replays scripted responses.
 #[derive(Clone)]
 pub struct HttpMock {
     scenarios: Arc<Mutex<Vec<Scenario>>>,
@@ -80,7 +96,7 @@ impl HttpMock {
     pub async fn start(self) -> std::io::Result<Handle> {
         let app = Router::new().fallback(any(handler)).with_state(self);
 
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let listener = TcpListener::bind(test_bind_addr()).await?;
         let addr = listener.local_addr()?;
 
         let (tx, rx) = oneshot::channel();
