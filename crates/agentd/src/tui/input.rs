@@ -2,7 +2,8 @@
 
 use crate::control_client::ControlClient;
 use crate::tui::new_modal;
-use crate::tui::state::{RenameModal, TuiState};
+use crate::tui::rename_modal;
+use crate::tui::state::TuiState;
 use agentd_protocol::Method;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::time::Instant;
@@ -66,10 +67,9 @@ pub async fn handle_key(state: &mut TuiState, key: KeyEvent, client: &ControlCli
 
 fn open_rename_modal(state: &mut TuiState) {
     if let Some(s) = state.selected_session() {
-        state.rename_modal = Some(RenameModal {
-            session_id: s.id,
-            input: s.display_name.clone(),
-        });
+        let mut m = rename_modal::open(&s.display_name);
+        m.session_id = s.id;
+        state.rename_modal = Some(m);
     }
 }
 
@@ -120,30 +120,25 @@ async fn handle_rename_modal_key(
     let Some(mut modal) = state.rename_modal.take() else {
         return false;
     };
-    match key.code {
-        KeyCode::Esc => {}
-        KeyCode::Enter => {
+    let outcome = rename_modal::apply_key(&mut modal, key);
+    match outcome {
+        rename_modal::RenameOutcome::Stay => {
+            state.rename_modal = Some(modal);
+        }
+        rename_modal::RenameOutcome::Cancel => {
+            state.rename_modal = None;
+        }
+        rename_modal::RenameOutcome::Commit(new_name) => {
+            state.rename_modal = None;
             let id = modal.session_id;
-            let new_name = modal.input.trim().to_string();
-            if !new_name.is_empty() {
-                let _ = client
-                    .call(
-                        Method::SESSION_RENAME,
-                        serde_json::json!({"id": id.to_string(), "name": new_name}),
-                    )
-                    .await;
-            }
-        }
-        KeyCode::Backspace => {
-            modal.input.pop();
-            state.rename_modal = Some(modal);
-        }
-        KeyCode::Char(c) => {
-            modal.input.push(c);
-            state.rename_modal = Some(modal);
-        }
-        _ => {
-            state.rename_modal = Some(modal);
+            let _ = client
+                .call(
+                    Method::SESSION_RENAME,
+                    serde_json::json!({"id": id.to_string(), "name": new_name}),
+                )
+                .await;
+            state.status_message =
+                Some((format!("Renamed to {new_name}"), std::time::Instant::now()));
         }
     }
     state.dirty = true;

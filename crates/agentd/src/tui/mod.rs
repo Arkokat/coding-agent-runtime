@@ -4,6 +4,7 @@ pub mod color;
 pub mod event_source;
 pub mod input;
 pub mod new_modal;
+pub mod rename_modal;
 pub mod render;
 pub mod state;
 
