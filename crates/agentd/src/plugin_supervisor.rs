@@ -87,6 +87,12 @@ impl PluginSupervisor {
     /// a `PluginHeartbeat` (liveness state, touched by the UDS server
     /// task), and a monitor task (wakes every 5s, restarts stale
     /// plugins up to 3 times in 60s before giving up).
+    ///
+    /// After spawn, a background task binds the per-plugin UDS and
+    /// waits for the child's `plugin.hello` (2s timeout). The result
+    /// is logged; the DB `last_connected_at` row is updated on
+    /// success. The full per-plugin accept loop lands in Plan 4 —
+    /// for v1 this is a fire-and-forget handshake.
     pub async fn autostart(&self, paths: &Paths) -> Result<usize, SupervisorError> {
         // Stash the paths for use by `ensure_plugin` later.
         *self.paths.lock() = Some(paths.clone());
@@ -103,6 +109,44 @@ impl PluginSupervisor {
             let binary = Path::new(&entry.binary);
             match spawner.spawn(&entry.name, binary, &socket).await {
                 Ok(handle) => {
+                    // Fire-and-forget handshake. The full per-plugin
+                    // accept loop is a Plan 4 task.
+                    let handshake_db = self.db.reopen();
+                    let handshake_socket = socket.clone();
+                    let plugin_name = entry.name.clone();
+                    tokio::spawn(async move {
+                        match crate::plugin_uds::bind_and_handshake(
+                            &handshake_socket,
+                            std::time::Duration::from_secs(2),
+                        )
+                        .await
+                        {
+                            Ok(hs) => {
+                                if let Err(e) = crate::plugin_uds::record_handshake(
+                                    &handshake_db,
+                                    &hs.plugin_name,
+                                ) {
+                                    tracing::warn!(
+                                        plugin = %hs.plugin_name,
+                                        error = %e,
+                                        "record_handshake failed",
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        plugin = %hs.plugin_name,
+                                        "plugin handshake complete",
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    plugin = %plugin_name,
+                                    error = %e,
+                                    "plugin handshake failed",
+                                );
+                            }
+                        }
+                    });
                     self.connected.lock().await.push(entry.name.clone());
                     self.handles.lock().await.insert(entry.name.clone(), handle);
                     let beat = Arc::new(PluginHeartbeat::new());

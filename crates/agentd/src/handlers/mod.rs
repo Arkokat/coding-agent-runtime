@@ -6,3 +6,4 @@
 pub mod mutate;
 pub mod plugin_handlers;
 pub mod read;
+pub mod router;

@@ -170,11 +170,22 @@ impl Daemon {
         tracing::info!(spawned, "restart_respawn complete");
         // Step 6: bind control UDS.
         let control = ControlServer::bind(&self.paths.control_socket_path)?;
+        let paths_for_handler = self.paths.clone();
+        let tmux_for_handler = Arc::clone(&self.tmux);
         let control_handle = tokio::spawn(async move {
-            control.serve(|_| {}).await;
+            control
+                .serve(move |stream| {
+                    crate::handlers::router::handle_client(
+                        stream,
+                        &paths_for_handler,
+                        &*tmux_for_handler,
+                    );
+                })
+                .await;
         });
         // Step 7: autostart plugins.
-        self.supervisor.autostart(&self.paths).await?;
+        let started = self.supervisor.autostart(&self.paths).await?;
+        tracing::info!(started, "autostart complete");
         // Idle: subscribe to bus + sleep until shutdown.
         let mut rx = self.bus.subscribe();
         loop {
