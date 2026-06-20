@@ -1,0 +1,29 @@
+---
+source: crates/agentd/tests/tui_render.rs
+assertion_line: 142
+expression: s
+---
+ 0 agents · 0 waiting · 0 errored · $0.00                                       
+────────────────────────────────────────────────────────────────────────────────
+  (no active sessions)                                                          
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+      ┌ New session ─────────────────────────────────────────────────────┐      
+      │  age_                                                            │      
+      │                                                                  │      
+      │  Recent:                                                         │      
+──────│> /home/u/proj/agentd                                             │──────
+  (sel│  /home/u/proj/blog                                               │      
+      │                                                                  │      
+      └──────────────────────────────────────────────────────────────────┘      
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ c=create  r=rename  j=jump  x=kill  ?=help  q=quit

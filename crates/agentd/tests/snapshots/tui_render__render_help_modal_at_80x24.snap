@@ -1,0 +1,29 @@
+---
+source: crates/agentd/tests/tui_render.rs
+assertion_line: 114
+expression: s
+---
+ 0 agents · 0 waiting · 0 errored · $0.00                                       
+────────────────────────────────────────────────────────────────────────────────
+  (no active sessions)                                                          
+                                                                                
+                                                                                
+          ┌ Help ────────────────────────────────────────────────────┐          
+          │Navigation:                                               │          
+          │  j/k or arrows  move selection                           │          
+          │  g/G            top/bottom                               │          
+          │                                                          │          
+          │Actions:                                                  │          
+          │  Enter          jump to selected session                 │          
+──────────│  r              rename session                           │──────────
+  (select │  c              create new session                       │          
+          │  x              kill selected session                    │          
+          │                                                          │          
+          │Misc:                                                     │          
+          │  ?              toggle this help                         │          
+          └──────────────────────────────────────────────────────────┘          
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ c=create  r=rename  j=jump  x=kill  ?=help  q=quit

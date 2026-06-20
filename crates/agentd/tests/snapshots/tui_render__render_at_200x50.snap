@@ -1,0 +1,55 @@
+---
+source: crates/agentd/tests/tui_render.rs
+assertion_line: 106
+expression: s
+---
+ 3 agents · 2 waiting · 2 errored · $1.20                                                                                                                                                               
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>  ●  sess-0  Working  editing main.rs                                                                                                                                                                  
+   ◌  sess-1  Idle  editing main.rs                                                                                                                                                                     
+   ⚠  sess-2  WaitingForUser  editing main.rs                                                                                                                                                           
+   ✕  sess-3  Errored  editing main.rs                                                                                                                                                                  
+   ●  sess-4  Working  editing main.rs                                                                                                                                                                  
+   ◌  sess-5  Idle  editing main.rs                                                                                                                                                                     
+   ⚠  sess-6  WaitingForUser  editing main.rs                                                                                                                                                           
+   ✕  sess-7  Errored  editing main.rs                                                                                                                                                                  
+   ●  sess-8  Working  editing main.rs                                                                                                                                                                  
+   ◌  sess-9  Idle  editing main.rs                                                                                                                                                                     
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+sess-0 in /tmp/proj                                                                                                                                                                                     
+  task: editing main.rs                                                                                                                                                                                 
+  tokens: 42000/200000 (21%)                                                                                                                                                                            
+  cost: $0.12                                                                                                                                                                                           
+  status: Working                                                                                                                                                                                       
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+                                                                                                                                                                                                        
+ c=create  r=rename  j=jump  x=kill  ?=help  q=quit

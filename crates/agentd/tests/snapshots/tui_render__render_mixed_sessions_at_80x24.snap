@@ -1,0 +1,29 @@
+---
+source: crates/agentd/tests/tui_render.rs
+assertion_line: 87
+expression: s
+---
+ 1 agents · 1 waiting · 1 errored · $0.48                                       
+────────────────────────────────────────────────────────────────────────────────
+>  ●  alpha  Working  editing main.rs                                           
+   ◌  beta  Idle  editing main.rs                                               
+   ⚠  gamma  WaitingForUser  editing main.rs                                    
+   ✕  delta  Errored  editing main.rs                                           
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+────────────────────────────────────────────────────────────────────────────────
+alpha in /tmp/proj                                                              
+  task: editing main.rs                                                         
+  tokens: 42000/200000 (21%)                                                    
+  cost: $0.12                                                                   
+  status: Working                                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ c=create  r=rename  j=jump  x=kill  ?=help  q=quit
