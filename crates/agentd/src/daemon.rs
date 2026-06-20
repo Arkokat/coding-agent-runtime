@@ -121,3 +121,30 @@ impl Daemon {
         Arc::clone(&self.shutdown)
     }
 }
+
+/// Delete `finished` sessions whose `finished_at` is older than 30 days,
+/// plus any orphaned events. Returns the number of sessions deleted.
+///
+/// Called once at daemon boot, before the control UDS is bound, so
+/// client queries never see a partially-GCed state.
+pub fn tombstone_gc(db: &crate::db::Db) -> Result<usize, DaemonError> {
+    // Delete orphaned events first (sessions about to vanish).
+    db.conn()
+        .execute(
+            "DELETE FROM session_events WHERE session_id NOT IN (SELECT id FROM sessions)",
+            [],
+        )
+        .map_err(crate::db::repo::RepoError::from)
+        .map_err(DaemonError::Db)?;
+    let n = db
+        .conn()
+        .execute(
+            "DELETE FROM sessions
+             WHERE status = 'finished'
+               AND finished_at < datetime('now', '-30 days')",
+            [],
+        )
+        .map_err(crate::db::repo::RepoError::from)
+        .map_err(DaemonError::Db)?;
+    Ok(n)
+}
