@@ -138,24 +138,27 @@ impl Tmux for MockTmux {
 /// Run `tmux -V` and return true if it exits 0 with a parseable version
 /// >= 2.6 (the version that introduced `status-interval 1` reliably).
 pub fn tmux_version_ok() -> bool {
-    let out = std::process::Command::new("tmux").arg("-V").output();
-    let Ok(out) = out else { return false };
+    let Ok(out) = std::process::Command::new("tmux").arg("-V").output() else {
+        return false;
+    };
     if !out.status.success() {
         return false;
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    // Output: "tmux 3.4"
-    let Some(rest) = s.strip_prefix("tmux ") else {
+    // Output: "tmux 3.4" or "tmux 3.6b"; trim in case of a trailing newline.
+    let Some(rest) = s.trim_start().strip_prefix("tmux ") else {
         return false;
     };
-    let ver_str = rest.trim().split('.').next().unwrap_or("0");
-    ver_str.parse::<u32>().is_ok_and(|v| v >= 2)
-        && rest
-            .split('.')
-            .nth(1)
-            .and_then(|x| x.parse::<u32>().ok())
-            .unwrap_or(0)
-            >= 6
+    let mut parts = rest.trim().split('.');
+    let major = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    (major, minor) >= (2, 6)
 }
 
 /// `Tmux` implementation that shells out to the `tmux` binary via
@@ -171,13 +174,11 @@ impl Default for RealTmux {
 }
 
 impl RealTmux {
+    /// Build a `RealTmux` that shells out to `tmux` resolved via `$PATH`.
     pub fn new() -> Self {
         Self {
             tmux: PathBuf::from("tmux"),
         }
-    }
-    pub fn with_binary(p: PathBuf) -> Self {
-        Self { tmux: p }
     }
 }
 

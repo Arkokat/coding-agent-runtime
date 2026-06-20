@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::process::Command;
 
 /// The text inserted into (and later removed from) `~/.tmux.conf` by
 /// `agentd init` / `agentd uninstall`. Marked with sentinel comments
@@ -15,25 +14,9 @@ pub fn tmux_conf_fragment() -> String {
     s
 }
 
-/// Run `tmux -V` and return true if >= 2.6.
-pub fn tmux_version_ok() -> bool {
-    let out = Command::new("tmux").arg("-V").output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            // Format: "tmux 3.3a" or "tmux 2.6"
-            if let Some(rest) = s.split_whitespace().nth(1) {
-                let mut parts = rest.split('.');
-                let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-                let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
-                (major, minor) >= (2, 6)
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
+/// Run `tmux -V` and return true if >= 2.6. Re-exported from
+/// `crate::tmux` so there is one canonical implementation.
+pub use crate::tmux::tmux_version_ok;
 
 /// Write the default `config.toml` and empty `plugins.toml` under
 /// `paths.config_dir` if they don't already exist.
