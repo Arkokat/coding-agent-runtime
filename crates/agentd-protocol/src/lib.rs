@@ -6,6 +6,7 @@
 mod agent;
 mod error;
 mod methods;
+mod plugin;
 mod session;
 mod status;
 mod version;
@@ -13,6 +14,7 @@ mod version;
 pub use agent::AgentType;
 pub use error::{ProtocolError, ProtocolErrorWithMessage};
 pub use methods::Method;
+pub use plugin::Plugin;
 pub use session::{Session, SessionSource};
 pub use status::SessionStatus;
 pub use version::PROTOCOL_VERSION;

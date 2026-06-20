@@ -93,6 +93,8 @@ pub enum Command {
     },
     /// Generate a debug bundle tarball.
     Debug,
+    /// Open the interactive terminal dashboard.
+    Tui,
     /// Remove agentd config, state, and runtime files.
     Uninstall {
         /// Don't prompt for confirmation.

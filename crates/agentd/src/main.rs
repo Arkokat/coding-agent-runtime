@@ -79,6 +79,7 @@ fn main() -> Result<()> {
             println!("agentd metrics --format {format}: not yet implemented")
         }
         Command::Debug => println!("agentd debug: not yet implemented"),
+        Command::Tui => tui_via_local_runtime()?,
         Command::Uninstall { .. } => println!("agentd uninstall: not yet implemented"),
     }
     Ok(())
@@ -361,6 +362,13 @@ fn rpc_one_way(method: &str, params: serde_json::Value, label: &str) -> Result<(
         println!("{label} ok");
         Ok::<(), anyhow::Error>(())
     })
+}
+
+fn tui_via_local_runtime() -> Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(agentd::tui::run())
 }
 
 fn plugin(action: PluginAction) {

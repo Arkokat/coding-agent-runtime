@@ -23,3 +23,4 @@ pub mod session_create;
 pub mod state;
 pub mod status;
 pub mod tmux;
+pub mod tui;
