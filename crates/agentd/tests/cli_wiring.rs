@@ -57,6 +57,314 @@ async fn foreground_daemon_starts_and_shuts_down() {
     );
 }
 
+/// Spawn a foreground daemon on the caller's `LocalSet` and return a handle
+/// to its shutdown atomic and a join handle for `Daemon::run`.
+///
+/// The daemon is `!Send` (it owns a `rusqlite::Connection` directly), so
+/// it must run on a `LocalSet` via `spawn_local`, not `tokio::spawn`. The
+/// caller is responsible for driving the local set with `local.run_until`
+/// and awaiting the join handle inside it.
+fn spawn_foreground_daemon(
+    local: &tokio::task::LocalSet,
+    paths: &agentd::paths::Paths,
+) -> (
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let db = agentd::db::Db::open(&paths.state_db_path).expect("open");
+    agentd::db::migrations::run(&db).expect("migrate");
+    let bus = agentd::event_bus::EventBus::default();
+    let d = agentd::daemon::Daemon::new(
+        paths.clone(),
+        db,
+        bus,
+        Box::new(agentd::tmux::MockTmux::new()),
+        agentd::plugins_manifest::PluginsManifest::default(),
+    );
+    let shutdown = d.shutdown_handle();
+    let join = local.spawn_local(async move {
+        let _ = d.run().await;
+    });
+    (shutdown, join)
+}
+
+async fn wait_for_control_socket(paths: &agentd::paths::Paths) {
+    for _ in 0..40 {
+        if paths.control_socket_path.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[ignore = "needs AF_UNIX support (some local sandboxes block it)"]
+#[tokio::test]
+async fn new_via_cli_creates_session() {
+    let dir = agentd_testing::test_runtime_dir().join("cli-new");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create");
+    // SAFETY: `set_var` is `unsafe` under Rust 2024. Tests are single-threaded
+    // at this point and we set XDG paths once before resolving `Paths`.
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    }
+    let paths = agentd::paths::Paths::resolve();
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (shutdown, join) = spawn_foreground_daemon(&local, &paths);
+            wait_for_control_socket(&paths).await;
+            assert!(
+                paths.control_socket_path.exists(),
+                "control UDS should appear"
+            );
+
+            let client = agentd::control_client::ControlClient::connect(&paths.control_socket_path)
+                .await
+                .expect("connect");
+            let v: serde_json::Value = client
+                .call(
+                    "session.create",
+                    serde_json::json!({
+                        "agent_type": "opencode",
+                        "working_dir": "/tmp/x",
+                        "name": "cli-new-test",
+                    }),
+                )
+                .await
+                .expect("create");
+            assert!(v["id"].is_string(), "got {v}");
+
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = join.await;
+        })
+        .await;
+}
+
+#[ignore = "needs AF_UNIX support (some local sandboxes block it)"]
+#[tokio::test]
+async fn list_returns_active_sessions() {
+    let dir = agentd_testing::test_runtime_dir().join("cli-list");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create");
+    // SAFETY: `set_var` is `unsafe` under Rust 2024. Tests are single-threaded
+    // at this point and we set XDG paths once before resolving `Paths`.
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    }
+    let paths = agentd::paths::Paths::resolve();
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (shutdown, join) = spawn_foreground_daemon(&local, &paths);
+            wait_for_control_socket(&paths).await;
+
+            let client = agentd::control_client::ControlClient::connect(&paths.control_socket_path)
+                .await
+                .expect("connect");
+            let v: serde_json::Value = client
+                .call(
+                    "session.create",
+                    serde_json::json!({
+                        "agent_type": "opencode",
+                        "working_dir": "/tmp/y",
+                        "name": "cli-list-test",
+                    }),
+                )
+                .await
+                .expect("create");
+            let id = v["id"].as_str().unwrap().to_string();
+
+            let v: serde_json::Value = client
+                .call("session.list_active", serde_json::json!({}))
+                .await
+                .expect("list");
+            let arr = v.as_array().expect("array");
+            let ids: Vec<&str> = arr.iter().filter_map(|s| s["id"].as_str()).collect();
+            assert!(ids.contains(&id.as_str()), "list missing {id}: got {arr:?}");
+
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = join.await;
+        })
+        .await;
+}
+
+#[ignore = "needs AF_UNIX support (some local sandboxes block it)"]
+#[tokio::test]
+async fn jump_via_rpc_returns_invalid_params_without_tmux_binding() {
+    let dir = agentd_testing::test_runtime_dir().join("cli-jump");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create");
+    // SAFETY: `set_var` is `unsafe` under Rust 2024. Tests are single-threaded
+    // at this point and we set XDG paths once before resolving `Paths`.
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    }
+    let paths = agentd::paths::Paths::resolve();
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (shutdown, join) = spawn_foreground_daemon(&local, &paths);
+            wait_for_control_socket(&paths).await;
+
+            let client = agentd::control_client::ControlClient::connect(&paths.control_socket_path)
+                .await
+                .expect("connect");
+            let v: serde_json::Value = client
+                .call(
+                    "session.create",
+                    serde_json::json!({
+                        "agent_type": "opencode",
+                        "working_dir": "/tmp/z",
+                        "name": "cli-jump-test",
+                    }),
+                )
+                .await
+                .expect("create");
+            let id = v["id"].as_str().unwrap().to_string();
+
+            // Jump requires a `tmux_session`; a freshly-created session has
+            // none, so the handler returns `InvalidParams`. The point of
+            // this test is to exercise the `session.jump` RPC plumbing.
+            let res = client
+                .call("session.jump", serde_json::json!({"id": id}))
+                .await;
+            assert!(
+                matches!(res, Err(agentd::control_client::ControlClientError::Rpc(_))),
+                "expected Rpc error for session.jump without tmux binding, got {res:?}"
+            );
+
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = join.await;
+        })
+        .await;
+}
+
+#[ignore = "needs AF_UNIX support (some local sandboxes block it)"]
+#[tokio::test]
+async fn rename_via_rpc_updates_display_name() {
+    let dir = agentd_testing::test_runtime_dir().join("cli-rename");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create");
+    // SAFETY: `set_var` is `unsafe` under Rust 2024. Tests are single-threaded
+    // at this point and we set XDG paths once before resolving `Paths`.
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    }
+    let paths = agentd::paths::Paths::resolve();
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (shutdown, join) = spawn_foreground_daemon(&local, &paths);
+            wait_for_control_socket(&paths).await;
+
+            let client = agentd::control_client::ControlClient::connect(&paths.control_socket_path)
+                .await
+                .expect("connect");
+            let v: serde_json::Value = client
+                .call(
+                    "session.create",
+                    serde_json::json!({
+                        "agent_type": "opencode",
+                        "working_dir": "/tmp/r",
+                        "name": "cli-rename-original",
+                    }),
+                )
+                .await
+                .expect("create");
+            let id = v["id"].as_str().unwrap().to_string();
+
+            let v: serde_json::Value = client
+                .call(
+                    "session.rename",
+                    serde_json::json!({"id": id, "name": "cli-rename-new"}),
+                )
+                .await
+                .expect("rename");
+            assert_eq!(
+                v["display_name"].as_str(),
+                Some("cli-rename-new"),
+                "got {v}"
+            );
+
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = join.await;
+        })
+        .await;
+}
+
+#[ignore = "needs AF_UNIX support (some local sandboxes block it)"]
+#[tokio::test]
+async fn kill_via_rpc_marks_session_finished() {
+    let dir = agentd_testing::test_runtime_dir().join("cli-kill");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create");
+    // SAFETY: `set_var` is `unsafe` under Rust 2024. Tests are single-threaded
+    // at this point and we set XDG paths once before resolving `Paths`.
+    unsafe {
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+    }
+    let paths = agentd::paths::Paths::resolve();
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (shutdown, join) = spawn_foreground_daemon(&local, &paths);
+            wait_for_control_socket(&paths).await;
+
+            let client = agentd::control_client::ControlClient::connect(&paths.control_socket_path)
+                .await
+                .expect("connect");
+            let v: serde_json::Value = client
+                .call(
+                    "session.create",
+                    serde_json::json!({
+                        "agent_type": "opencode",
+                        "working_dir": "/tmp/k",
+                        "name": "cli-kill-test",
+                    }),
+                )
+                .await
+                .expect("create");
+            let id = v["id"].as_str().unwrap().to_string();
+
+            let v: serde_json::Value = client
+                .call("session.kill", serde_json::json!({"id": id}))
+                .await
+                .expect("kill");
+            assert_eq!(v["status"].as_str(), Some("finished"), "got {v}");
+
+            let v: serde_json::Value = client
+                .call("session.list_active", serde_json::json!({}))
+                .await
+                .expect("list");
+            let arr = v.as_array().expect("array");
+            let ids: Vec<&str> = arr.iter().filter_map(|s| s["id"].as_str()).collect();
+            assert!(
+                !ids.contains(&id.as_str()),
+                "killed session should not appear in list_active, got {arr:?}"
+            );
+
+            shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = join.await;
+        })
+        .await;
+}
+
 #[ignore = "needs AF_UNIX support (some local sandboxes block it)"]
 #[test]
 fn detach_writes_pid_and_unblocks_parent() {

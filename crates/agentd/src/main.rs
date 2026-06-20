@@ -16,11 +16,16 @@ fn main() -> Result<()> {
     init_tracing(cli.quiet);
     match cli.command {
         Command::Daemon { action } => daemon(action)?,
-        Command::List => println!("agentd list: not yet implemented"),
-        Command::New { .. } => println!("agentd new: not yet implemented"),
-        Command::Jump { id } => println!("agentd jump {id}: not yet implemented"),
-        Command::Rename { id, name } => println!("agentd rename {id} {name}: not yet implemented"),
-        Command::Kill { id } => println!("agentd kill {id}: not yet implemented"),
+        Command::List => list_via_daemon()?,
+        Command::New {
+            cwd,
+            pick: _,
+            recent: _,
+            agent,
+        } => new_via_daemon(cwd.as_deref(), agent.as_deref())?,
+        Command::Jump { id } => jump_via_daemon(&id)?,
+        Command::Rename { id, name } => rename_via_daemon(&id, &name)?,
+        Command::Kill { id } => kill_via_daemon(&id)?,
         Command::Status { global, pane } => status(global, pane)?,
         Command::Plugin { action } => plugin(action),
         #[allow(clippy::if_not_else)]
@@ -276,6 +281,89 @@ fn status_daemon() -> Result<()> {
         paths.daemon_pid_path().display()
     );
     Ok(())
+}
+
+fn list_via_daemon() -> Result<()> {
+    let paths = agentd::paths::Paths::resolve();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = agentd::daemon::ensure_daemon_running(&paths)
+            .await
+            .map_err(|e| anyhow::anyhow!("ensure_daemon_running: {e}"))?;
+        let v = client
+            .call("session.list_active", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("list_active: {e}"))?;
+        if let Some(arr) = v.as_array() {
+            for s in arr {
+                println!("{}\t{:?}\t{}", s["id"], s["status"], s["display_name"]);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+fn new_via_daemon(cwd: Option<&str>, agent: Option<&str>) -> Result<()> {
+    let paths = agentd::paths::Paths::resolve();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = agentd::daemon::ensure_daemon_running(&paths)
+            .await
+            .map_err(|e| anyhow::anyhow!("ensure_daemon_running: {e}"))?;
+        let cwd = cwd.unwrap_or(".");
+        let params = serde_json::json!({
+            "agent_type": agent.unwrap_or("opencode"),
+            "working_dir": cwd,
+            "name": std::path::Path::new(cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("session"),
+        });
+        let v = client
+            .call("session.create", params)
+            .await
+            .map_err(|e| anyhow::anyhow!("session.create: {e}"))?;
+        println!("Created session {}", v["id"]);
+        Ok::<(), anyhow::Error>(())
+    })
+}
+
+fn jump_via_daemon(id: &str) -> Result<()> {
+    rpc_one_way("session.jump", serde_json::json!({"id": id}), "jump")
+}
+
+fn rename_via_daemon(id: &str, name: &str) -> Result<()> {
+    rpc_one_way(
+        "session.rename",
+        serde_json::json!({"id": id, "name": name}),
+        "rename",
+    )
+}
+
+fn kill_via_daemon(id: &str) -> Result<()> {
+    rpc_one_way("session.kill", serde_json::json!({"id": id}), "kill")
+}
+
+fn rpc_one_way(method: &str, params: serde_json::Value, label: &str) -> Result<()> {
+    let paths = agentd::paths::Paths::resolve();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = agentd::daemon::ensure_daemon_running(&paths)
+            .await
+            .map_err(|e| anyhow::anyhow!("ensure_daemon_running: {e}"))?;
+        client
+            .call(method, params)
+            .await
+            .map_err(|e| anyhow::anyhow!("{label}: {e}"))?;
+        println!("{label} ok");
+        Ok::<(), anyhow::Error>(())
+    })
 }
 
 fn plugin(action: PluginAction) {

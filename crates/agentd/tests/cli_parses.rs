@@ -31,7 +31,11 @@ fn parses_new_with_cwd() {
         .output()
         .expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("agentd new"), "got: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("not yet implemented") && !stderr.contains("not yet implemented"),
+        "got stdout: {stdout}, stderr: {stderr}"
+    );
 }
 
 #[test]
