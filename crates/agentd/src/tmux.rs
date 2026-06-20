@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -134,3 +134,169 @@ impl Tmux for MockTmux {
         Ok(String::new())
     }
 }
+
+/// Run `tmux -V` and return true if it exits 0 with a parseable version
+/// >= 2.6 (the version that introduced `status-interval 1` reliably).
+pub fn tmux_version_ok() -> bool {
+    let out = std::process::Command::new("tmux").arg("-V").output();
+    let Ok(out) = out else { return false };
+    if !out.status.success() {
+        return false;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Output: "tmux 3.4"
+    let Some(rest) = s.strip_prefix("tmux ") else {
+        return false;
+    };
+    let ver_str = rest.trim().split('.').next().unwrap_or("0");
+    ver_str.parse::<u32>().is_ok_and(|v| v >= 2)
+        && rest
+            .split('.')
+            .nth(1)
+            .and_then(|x| x.parse::<u32>().ok())
+            .unwrap_or(0)
+            >= 6
+}
+
+/// `Tmux` implementation that shells out to the `tmux` binary via
+/// `tokio::process::Command`. Used in production; tests use `MockTmux`.
+pub struct RealTmux {
+    tmux: PathBuf,
+}
+
+impl Default for RealTmux {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RealTmux {
+    pub fn new() -> Self {
+        Self {
+            tmux: PathBuf::from("tmux"),
+        }
+    }
+    pub fn with_binary(p: PathBuf) -> Self {
+        Self { tmux: p }
+    }
+}
+
+#[async_trait]
+impl Tmux for RealTmux {
+    async fn new_session(&self, name: &str, working_dir: &str) -> Result<String, TmuxError> {
+        validate_session_name(name)?;
+        let out = tokio::process::Command::new(&self.tmux)
+            .args(["new-session", "-d", "-s", name, "-c", working_dir])
+            .output()
+            .await
+            .map_err(TmuxError::Io)?;
+        if !out.status.success() {
+            return Err(TmuxError::Tmux(
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+        // The new pane id is %N; we can fetch it with list-panes.
+        let panes = self.list_panes().await?;
+        panes
+            .into_iter()
+            .find(|p| p.session == name)
+            .map(|p| p.pane_id)
+            .ok_or_else(|| TmuxError::Tmux(format!("no pane found for {name}")))
+    }
+
+    async fn has_session(&self, name: &str) -> bool {
+        let Ok(out) = tokio::process::Command::new(&self.tmux)
+            .args(["has-session", "-t", name])
+            .output()
+            .await
+        else {
+            return false;
+        };
+        out.status.success()
+    }
+
+    async fn switch_client(&self, target: &str) -> Result<(), TmuxError> {
+        let out = tokio::process::Command::new(&self.tmux)
+            .args(["switch-client", "-t", target])
+            .output()
+            .await
+            .map_err(TmuxError::Io)?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(TmuxError::NotFound(target.to_string()))
+        }
+    }
+
+    async fn list_panes(&self) -> Result<Vec<Pane>, TmuxError> {
+        let out = tokio::process::Command::new(&self.tmux)
+            .args([
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name} #{pane_id} #{pane_current_path}",
+            ])
+            .output()
+            .await
+            .map_err(TmuxError::Io)?;
+        if !out.status.success() {
+            return Err(TmuxError::Tmux(
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.lines()
+            .filter_map(|line| {
+                let mut it = line.splitn(3, ' ');
+                Some(Pane {
+                    session: it.next()?.to_string(),
+                    pane_id: it.next()?.to_string(),
+                    working_dir: it.next()?.to_string(),
+                })
+            })
+            .collect::<Vec<_>>()
+            .pipe(Ok)
+    }
+
+    async fn kill_session(&self, name: &str) -> Result<(), TmuxError> {
+        let out = tokio::process::Command::new(&self.tmux)
+            .args(["kill-session", "-t", name])
+            .output()
+            .await
+            .map_err(TmuxError::Io)?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            // Already gone is fine; surface other errors.
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if stderr.contains("can't find session") {
+                Ok(())
+            } else {
+                Err(TmuxError::Tmux(stderr.into_owned()))
+            }
+        }
+    }
+
+    async fn capture_pane(&self, pane: &str, lines: u16) -> Result<String, TmuxError> {
+        let out = tokio::process::Command::new(&self.tmux)
+            .args(["capture-pane", "-p", "-t", pane, "-S", &format!("-{lines}")])
+            .output()
+            .await
+            .map_err(TmuxError::Io)?;
+        if !out.status.success() {
+            return Err(TmuxError::Tmux(
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+}
+
+// Tiny `pipe` helper used by `list_panes` to convert `Vec<T>` into
+// `Result<Vec<T>, E>` without an extra intermediate binding.
+trait Pipe: Sized {
+    fn pipe<R>(self, f: impl FnOnce(Self) -> R) -> R {
+        f(self)
+    }
+}
+impl<T> Pipe for T {}
