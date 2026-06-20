@@ -20,3 +20,10 @@ Cargo.lock.bak
 
 # Local data (never commit)
 /.local-data/
+
+# Test runtime dir (UDS sockets for agentd tests)
+# Pin the host sandbox to <worktree>/tmp/uds/ to allow the 4 UDS tests
+# in crates/agentd/tests/{control_server,control_client}.rs to run
+# locally. Keep the path SHORT — UDS has a ~108 byte path limit (SUN_LEN),
+# and our worktree path is already long.
+/tmp/
