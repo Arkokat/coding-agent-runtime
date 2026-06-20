@@ -1,5 +1,4 @@
 use serde_json::{Value, json};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -23,9 +22,10 @@ pub struct ControlClient {
 }
 
 impl ControlClient {
-    #[allow(clippy::unused_async)] // async signature required by callers in async contexts
+    /// Just store the path. The actual connection happens in `call`.
+    /// `async` signature required by callers in async contexts.
+    #[allow(clippy::unused_async)]
     pub async fn connect(socket: &Path) -> Result<Self, ControlClientError> {
-        let _ = UnixStream::connect(socket)?;
         Ok(Self {
             path: socket.to_path_buf(),
         })

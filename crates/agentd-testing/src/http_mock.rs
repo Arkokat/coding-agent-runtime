@@ -27,19 +27,33 @@ pub fn hash_body(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
+/// Counter for the per-call port assignment. Starts at 31415 and wraps
+/// within the 85-port sandbox-allowed range (31415..=31499).
+static NEXT_TEST_PORT: std::sync::atomic::AtomicU16 =
+    std::sync::atomic::AtomicU16::new(31415);
+
 /// Fixed TCP bind address used by `HttpMock::start` and the fixture tests.
 ///
 /// Pinned to a specific port (instead of `127.0.0.1:0` OS-pick) so the host's
-/// sandbox can allow-list one concrete port. Default `127.0.0.1:31415`; override
-/// with the `AGENTD_TEST_PORT` env var if that port is taken or blocked:
-/// `AGENTD_TEST_PORT=18932 cargo test -p agentd-testing`.
+/// sandbox can allow-list one concrete port. Default starts at `127.0.0.1:31415`;
+/// each subsequent call returns the next port in the range
+/// `31415..=31499` so parallel tests in the same binary don't conflict on
+/// `AddrInUse`. Override with the `AGENTD_TEST_PORT` env var to pin to a
+/// single port (e.g. `AGENTD_TEST_PORT=18932 cargo test -p agentd-testing`).
+///
+/// The host sandbox must allow the range — pin `127.0.0.1:31415-31499`
+/// (or a narrower range if you know your test count).
 pub fn test_bind_addr() -> String {
+    use std::sync::atomic::Ordering;
     if let Ok(p) = std::env::var("AGENTD_TEST_PORT") {
         if let Ok(port) = p.parse::<u16>() {
             return format!("127.0.0.1:{port}");
         }
     }
-    "127.0.0.1:31415".to_string()
+    let port = NEXT_TEST_PORT.fetch_add(1, Ordering::SeqCst);
+    // Wrap around to stay within the sandbox-allowed range
+    let port = 31415 + (port - 31415) % 85; // 31415..=31499
+    format!("127.0.0.1:{port}")
 }
 
 /// Handle to a running mock server. Drop to stop, or call `stop`.

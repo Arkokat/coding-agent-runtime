@@ -8,7 +8,6 @@ use agentd::ipc::control::ControlServer;
 use agentd::ipc::framing;
 use agentd_testing::test_socket_path;
 use serde_json::json;
-use std::os::unix::net::UnixStream;
 
 /// Remove a UDS socket file if present. Idempotent; ignores `NotFound`.
 fn cleanup_sock(path: &std::path::Path) {
@@ -38,9 +37,13 @@ async fn client_sends_request_and_reads_response() {
     let client = ControlClient::connect(&sock).await.expect("connect");
     let v = client.call("ping", json!({})).await.expect("call");
     assert_eq!(v["ok"], true);
+    // Each accepted connection runs the handler once. ControlClient::call
+    // opens a fresh connection per call (see AgentdClient::call in
+    // agent-plugin-sdk), so the handler is invoked exactly once for the
+    // single client call. (An earlier "sanity" extra connect bumped
+    // this to 2 and made the assertion wrong; removed.)
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 
-    let _ = UnixStream::connect(&sock); // sanity
     join.abort();
     cleanup_sock(&sock);
 }
