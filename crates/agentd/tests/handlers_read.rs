@@ -99,6 +99,39 @@ fn dispatch_daemon_status() {
 }
 
 #[test]
+fn dispatch_session_list_active_returns_only_non_finished() {
+    let db = fresh_db();
+    // Two sessions: one starting, one already finished. The router
+    // (read::dispatch) walks SessionRepo::list_non_finished which
+    // filters by !is_terminal(); Finished is terminal, so the
+    // finished session must be excluded.
+    let starting = insert_session(&db);
+    let mut finished = insert_session(&db);
+    finished.status = SessionStatus::Finished;
+    SessionRepo::new(&db)
+        .update_status(&finished.id, SessionStatus::Finished, Utc::now())
+        .expect("mark finished");
+
+    let r =
+        read::dispatch(Method::SESSION_LIST_ACTIVE, serde_json::json!({}), &db).expect("handled");
+    let arr = r.as_array().expect("array result");
+    assert_eq!(
+        arr.len(),
+        1,
+        "expected only the non-finished session, got {arr:?}"
+    );
+    let ids: Vec<&str> = arr.iter().filter_map(|s| s["id"].as_str()).collect();
+    assert!(
+        ids.contains(&starting.id.to_string().as_str()),
+        "starting session should be present, got {ids:?}",
+    );
+    assert!(
+        !ids.contains(&finished.id.to_string().as_str()),
+        "finished session should be excluded, got {ids:?}",
+    );
+}
+
+#[test]
 fn dispatch_plugin_list_empty() {
     let db = fresh_db();
     let r = read::dispatch(Method::PLUGIN_LIST, serde_json::json!({}), &db).expect("handled");

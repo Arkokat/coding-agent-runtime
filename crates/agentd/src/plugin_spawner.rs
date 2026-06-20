@@ -127,7 +127,7 @@ impl PluginSpawner for RealPluginSpawner {
         &self,
         name: &str,
         binary: &Path,
-        _control_socket: &Path,
+        control_socket: &Path,
     ) -> Result<PluginHandle, SpawnError> {
         let resolved = if binary == Path::new("") {
             Self::resolve(name)
@@ -137,11 +137,18 @@ impl PluginSpawner for RealPluginSpawner {
         if !resolved.exists() {
             return Err(SpawnError::NotFound(resolved));
         }
+        // Pass `--control-socket <path>` so the plugin child knows
+        // where to connect back. Use `as_os_str()` (not `to_str()`)
+        // so non-UTF-8 paths don't trip the unwrap — `Command::arg`
+        // accepts `OsStr` directly.
+        let socket_arg = control_socket.as_os_str();
         let child = tokio::process::Command::new(&resolved)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
+            .arg("--control-socket")
+            .arg(socket_arg)
             .spawn()
             .map_err(SpawnError::Io)?;
         Ok(PluginHandle {
