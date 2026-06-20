@@ -1,13 +1,14 @@
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// One event on the bus. Server pushes these to every subscriber.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// Method name without the `event.` prefix (e.g. `session.status_changed`).
     pub kind: String,

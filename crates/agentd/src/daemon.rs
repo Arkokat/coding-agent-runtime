@@ -169,9 +169,18 @@ impl Daemon {
         let spawned = restart_respawn(&self.db, &self.supervisor).await?;
         tracing::info!(spawned, "restart_respawn complete");
         // Step 6: bind control UDS.
+        let registry = Arc::new(crate::handlers::subscriber_registry::SubscriberRegistry::new());
+        let mut bus_rx = self.bus.subscribe();
+        let registry_for_task = Arc::clone(&registry);
+        tokio::spawn(async move {
+            while let Ok(event) = bus_rx.recv().await {
+                registry_for_task.broadcast(&event);
+            }
+        });
         let control = ControlServer::bind(&self.paths.control_socket_path)?;
         let paths_for_handler = self.paths.clone();
         let tmux_for_handler = Arc::clone(&self.tmux);
+        let registry_for_handler = Arc::clone(&registry);
         let control_handle = tokio::spawn(async move {
             control
                 .serve(move |stream| {
@@ -179,6 +188,7 @@ impl Daemon {
                         stream,
                         &paths_for_handler,
                         &*tmux_for_handler,
+                        &registry_for_handler,
                     );
                 })
                 .await;
