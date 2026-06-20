@@ -6,6 +6,8 @@ use thiserror::Error;
 pub enum DbError {
     #[error("open {0}: {1}")]
     Open(PathBuf, rusqlite::Error),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
     #[error("pragma: {0}")]
     Pragma(rusqlite::Error),
     #[error("migrate: {0}")]
@@ -21,7 +23,15 @@ pub struct Db {
 
 impl Db {
     /// Open or create `state.db` at `path` and apply pragmas.
+    ///
+    /// Creates the parent directory tree if it does not exist, so callers
+    /// can pass a path under a not-yet-created XDG state dir.
     pub fn open(path: &Path) -> Result<Self, DbError> {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
         let conn = Connection::open(path).map_err(|e| DbError::Open(path.to_path_buf(), e))?;
         let db = Self { conn };
         db.apply_pragmas()?;

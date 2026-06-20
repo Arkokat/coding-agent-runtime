@@ -8,6 +8,7 @@
 pub mod cli;
 pub mod config;
 pub mod control_client;
+pub mod daemon;
 pub mod db;
 pub mod event_bus;
 pub mod handlers;

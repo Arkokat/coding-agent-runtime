@@ -22,8 +22,10 @@ pub struct Paths {
     pub state_db_path: PathBuf,
     /// `runtime_dir/control.sock`
     pub control_socket_path: PathBuf,
-    /// `runtime_dir/daemon.lock`
+    /// `runtime_dir/daemon.lock` (legacy alias; prefer `daemon_lock_path`)
     pub lock_path: PathBuf,
+    /// `runtime_dir/daemon.lock` — flock held while a daemon is running
+    pub daemon_lock_path: PathBuf,
     /// `state_dir/logs`
     pub log_dir: PathBuf,
     /// `state_dir/plugins` (downloaded plugin binaries)
@@ -85,6 +87,7 @@ impl Paths {
         Self {
             control_socket_path: runtime_dir.join("control.sock"),
             lock_path: runtime_dir.join("daemon.lock"),
+            daemon_lock_path: runtime_dir.join("daemon.lock"),
             state_db_path: state_dir.join("state.db"),
             log_dir: state_dir.join("logs"),
             plugins_dir: state_dir.join("plugins"),
