@@ -6,15 +6,16 @@
 
 use anyhow::Result;
 use clap::Parser;
+use std::sync::atomic::Ordering;
 
 use agentd::cli::{self, Cli, Command, DaemonAction, PluginAction};
-use agentd::paths;
+use agentd::paths::{self, Paths};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(cli.quiet);
     match cli.command {
-        Command::Daemon { action } => daemon(action),
+        Command::Daemon { action } => daemon(action)?,
         Command::List => println!("agentd list: not yet implemented"),
         Command::New { .. } => println!("agentd new: not yet implemented"),
         Command::Jump { id } => println!("agentd jump {id}: not yet implemented"),
@@ -89,13 +90,112 @@ fn init_tracing(quiet: bool) {
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
-fn daemon(action: DaemonAction) {
+fn daemon(action: DaemonAction) -> Result<()> {
+    use agentd::daemon::Daemon;
+    use agentd::event_bus::EventBus;
+    use agentd::plugins_manifest::PluginsManifest;
+    use agentd::tmux::RealTmux;
     match action {
-        DaemonAction::Start { .. } => println!("agentd daemon start: not yet implemented"),
-        DaemonAction::Stop => println!("agentd daemon stop: not yet implemented"),
-        DaemonAction::Restart => println!("agentd daemon restart: not yet implemented"),
-        DaemonAction::Status => println!("agentd daemon status: not yet implemented"),
+        DaemonAction::Start { foreground } => {
+            let paths = Paths::resolve();
+            std::fs::create_dir_all(&paths.state_dir)?;
+            let db = agentd::db::Db::open(&paths.state_db_path)?;
+            agentd::db::migrations::run(&db)?;
+            let manifest = load_manifest(&paths)?;
+            let bus = EventBus::default();
+            let mut d = Daemon::new(
+                paths,
+                db,
+                bus,
+                Box::new(RealTmux::new()),
+                PluginsManifest::default(),
+            );
+            d.supervisor = agentd::plugin_supervisor::PluginSupervisor::new(
+                agentd::event_bus::EventBus::default(),
+                &d.db,
+                manifest,
+            );
+            install_signal_handler(d.shutdown_handle());
+            if !foreground {
+                return detach_via_double_fork();
+            }
+            // Foreground: park on the daemon.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async move { d.run().await })?;
+            Ok(())
+        }
+        DaemonAction::Stop => {
+            // RPC: daemon.shutdown, then poll for socket disappearance.
+            stop_daemon()
+        }
+        DaemonAction::Restart => {
+            stop_daemon()?;
+            daemon(DaemonAction::Start { foreground: true })
+        }
+        DaemonAction::Status => status_daemon(),
     }
+}
+
+fn load_manifest(paths: &Paths) -> Result<agentd::plugins_manifest::PluginsManifest> {
+    let path = paths.config_dir.join("plugins.toml");
+    if !path.exists() {
+        return Ok(agentd::plugins_manifest::PluginsManifest::default());
+    }
+    let body = std::fs::read_to_string(&path)?;
+    Ok(toml::from_str(&body)?)
+}
+
+fn install_signal_handler(shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    // Best-effort: install SIGINT + SIGTERM handler that flips `shutdown`.
+    let _ = ctrlc::set_handler(move || {
+        shutdown.store(true, Ordering::SeqCst);
+    });
+}
+
+fn detach_via_double_fork() -> Result<()> {
+    // The caller (agentd daemon start, no --foreground) double-forks and
+    // execs the same binary in --foreground mode. This is invoked from
+    // `daemon start` in the CLI; for the foreground path we don't fork.
+    // Implementation is added in Task 16.
+    Err(anyhow::anyhow!("--detach not yet implemented (Task 16)"))
+}
+
+fn stop_daemon() -> Result<()> {
+    let paths = agentd::paths::Paths::resolve();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let client = agentd::control_client::ControlClient::connect(&paths.control_socket_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
+        client
+            .call("daemon.shutdown", serde_json::json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("shutdown: {e}"))?;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if !paths.control_socket_path.exists() {
+                return Ok(());
+            }
+        }
+        Err(anyhow::anyhow!("daemon did not stop within 5s"))
+    })
+}
+
+fn status_daemon() -> Result<()> {
+    let paths = agentd::paths::Paths::resolve();
+    if !paths.control_socket_path.exists() {
+        println!("agentd: not running");
+        return Ok(());
+    }
+    println!(
+        "agentd: running (pid file: {})",
+        paths.daemon_pid_path().display()
+    );
+    Ok(())
 }
 
 fn plugin(action: PluginAction) {

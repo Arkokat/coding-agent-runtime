@@ -103,6 +103,11 @@ impl Paths {
         self.runtime_dir.join(format!("plugin-{name}.sock"))
     }
 
+    /// `runtime_dir/daemon.pid` — PID file for the running daemon.
+    pub fn daemon_pid_path(&self) -> PathBuf {
+        self.runtime_dir.join("daemon.pid")
+    }
+
     /// Create all directories (idempotent).
     pub fn ensure(&self) -> io::Result<()> {
         for d in [
