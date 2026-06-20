@@ -107,7 +107,7 @@ fn session_discover(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
     Ok(json!({"ok": true, "session_id": id.to_string()}))
 }
 
-fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginResult {
+fn session_report_event(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
     let session_id_str = params
         .get("session_id")
         .and_then(Value::as_str)
@@ -131,6 +131,23 @@ fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginRes
         .get(&id)
         .map_err(|_| ProtocolError::InternalError)?
         .ok_or(ProtocolError::SessionNotFound)?;
+
+    // Write-authority: the session row's `metadata["plugin"]` must match
+    // the calling plugin's name for any mutating event kind. Non-mutating
+    // events (`session.message`) skip the check.
+    let mutating = matches!(
+        kind,
+        "session.status_changed"
+            | "session.task_changed"
+            | "session.usage_updated"
+            | "session.finished"
+    );
+    if mutating {
+        let owner = session.metadata.get("plugin").and_then(Value::as_str);
+        if owner != Some(plugin_name) {
+            return Err(ProtocolError::PluginNotAuthoritative);
+        }
+    }
 
     let event_id = EventRepo::new(db)
         .insert(&id, kind, &payload)
@@ -171,7 +188,6 @@ fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginRes
             .mark_finished(&id, ts)
             .map_err(|_| ProtocolError::InternalError)?;
     }
-    let _ = session; // ownership rule (-32004) is enforced once the supervisor is wired in Plan 3
 
     Ok(json!({
         "accepted": true,

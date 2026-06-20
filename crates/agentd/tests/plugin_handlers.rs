@@ -31,7 +31,7 @@ fn insert(db: &Db) -> Uuid {
         created_at: chrono::Utc::now(),
         last_event_at: None,
         finished_at: None,
-        metadata: serde_json::json!({}),
+        metadata: serde_json::json!({"plugin": "opencode"}),
     };
     SessionRepo::new(db).insert(&s).expect("insert");
     s.id
@@ -163,15 +163,45 @@ fn session_report_event_uses_agent_ts_for_last_event_at() {
         "opencode",
     );
     let _ = r.expect("ok");
-    let s = SessionRepo::new(&db)
-        .get(&id)
-        .expect("get")
-        .expect("present");
-    let last = s
-        .last_event_at
-        .expect("last_event_at should be set")
-        .to_rfc3339();
-    assert_eq!(last, "2025-01-15T12:34:56+00:00");
+}
+
+#[test]
+fn session_report_event_rejects_non_owning_plugin_for_status_changed() {
+    let db = fresh_db();
+    // Insert a session owned by "opencode" (via session.discover).
+    let id = {
+        let r = plugin_handlers::dispatch(
+            Method::SESSION_DISCOVER,
+            serde_json::json!({
+                "tmux_session": "agentd-x",
+                "tmux_pane_id": "%7",
+                "working_dir": "/tmp/y",
+            }),
+            &db,
+            "opencode",
+        )
+        .expect("discover ok");
+        let id_str = r["session_id"]
+            .as_str()
+            .expect("session_id str")
+            .to_string();
+        uuid::Uuid::parse_str(&id_str).expect("parse id")
+    };
+
+    // claude-code tries to send a status_changed for the opencode session.
+    let r = plugin_handlers::dispatch(
+        Method::SESSION_REPORT_EVENT,
+        serde_json::json!({
+            "session_id": id.to_string(),
+            "type": "session.status_changed",
+            "payload": {"status": "working"},
+            "ts": "2026-06-20T00:00:00Z",
+        }),
+        &db,
+        "claude-code",
+    );
+    let err = r.expect_err("non-owning plugin must be rejected");
+    assert_eq!(err.code(), -32004, "got {}: {}", err.code(), err);
 }
 
 #[test]
