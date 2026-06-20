@@ -1,5 +1,5 @@
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -30,10 +30,14 @@ impl ControlServer {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let listener = UnixListener::bind(path)?;
+        // Bind via tokio directly (not std + from_std) so the listener is
+        // created non-blocking from the start. Registering a blocking
+        // socket with the tokio runtime triggers the unstable feature
+        // gate `tokio_allow_from_blocking_fd` (see tokio#7172).
+        let listener = TokioUnixListener::bind(path)
+            .map_err(ControlError::Io)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         let addr = path.to_path_buf();
-        let listener = TokioUnixListener::from_std(listener)?;
         Ok(Self {
             listener,
             addr,
