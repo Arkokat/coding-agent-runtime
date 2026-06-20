@@ -33,6 +33,15 @@ pub enum MutateResult {
     Err(ProtocolError),
 }
 
+impl serde::Serialize for MutateResult {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            MutateResult::Ok(v) => v.serialize(serializer),
+            MutateResult::Err(e) => e.serialize(serializer),
+        }
+    }
+}
+
 impl MutateResult {
     pub fn into_value(self) -> Option<Value> {
         match self {
@@ -50,21 +59,13 @@ impl MutateResult {
 
 /// Dispatch a mutating JSON-RPC method. Returns `MutateResult::Err(MethodNotFound)`
 /// for methods that are not mutations (router should try the read dispatcher).
-///
-/// `tmux` is threaded through so future handlers (`session.jump`,
-/// `session.kill`) can call `switch_client` / `kill_session`. It is unused
-/// for the DB-only handlers; the placeholder jump/kill arm suppresses the
-/// unused-argument lint via a one-element tuple.
 pub fn dispatch(method: &str, params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
     match method {
         Method::SESSION_CREATE => session_create(params, db),
         Method::SESSION_RENAME => session_rename(params, db),
         Method::SESSION_DISMISS_ERROR => session_dismiss_error(params, db),
-        Method::SESSION_JUMP | Method::SESSION_KILL => {
-            // Real impl in Task 11.
-            let _ = (tmux,);
-            MutateResult::Err(ProtocolError::InternalError)
-        }
+        Method::SESSION_JUMP => session_jump(params, db, tmux),
+        Method::SESSION_KILL => session_kill(params, db, tmux),
         Method::DAEMON_SHUTDOWN => {
             SHUTDOWN.store(true, Ordering::SeqCst);
             MutateResult::Ok(json!({"ok": true}))
@@ -171,6 +172,69 @@ fn session_dismiss_error(params: Value, db: &Db) -> MutateResult {
     }
     if SessionRepo::new(db)
         .update_status(&id, SessionStatus::Idle, chrono::Utc::now())
+        .is_err()
+    {
+        return MutateResult::Err(ProtocolError::InternalError);
+    }
+    match SessionRepo::new(db).get(&id) {
+        Ok(Some(s)) => match serde_json::to_value(s) {
+            Ok(v) => MutateResult::Ok(v),
+            Err(_) => MutateResult::Err(ProtocolError::InternalError),
+        },
+        _ => MutateResult::Err(ProtocolError::InternalError),
+    }
+}
+
+/// Handler for `session.jump`: switch the connected tmux client to the
+/// session's tmux window. Returns `SessionNotFound` for missing sessions
+/// or missing tmux bindings, and surfaces tmux errors as `SessionNotFound`.
+fn session_jump(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
+    let id_str = match params.get("id").and_then(Value::as_str) {
+        Some(s) => s,
+        None => return MutateResult::Err(ProtocolError::InvalidParams),
+    };
+    let id = match Uuid::parse_str(id_str) {
+        Ok(u) => u,
+        Err(_) => return MutateResult::Err(ProtocolError::InvalidParams),
+    };
+    let session = match SessionRepo::new(db).get(&id) {
+        Ok(Some(s)) => s,
+        _ => return MutateResult::Err(ProtocolError::SessionNotFound),
+    };
+    let target = match session.tmux_session {
+        Some(t) => t,
+        None => return MutateResult::Err(ProtocolError::InvalidParams),
+    };
+    match futures::executor::block_on(tmux.switch_client(&target)) {
+        Ok(()) => MutateResult::Ok(json!({"ok": true})),
+        Err(_) => MutateResult::Err(ProtocolError::SessionNotFound),
+    }
+}
+
+/// Handler for `session.kill`: tear down the session's tmux window
+/// (if any) and mark the row `finished`. Returns the updated session on
+/// success, or `SessionNotFound` for missing or already-finished sessions.
+fn session_kill(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
+    let id_str = match params.get("id").and_then(Value::as_str) {
+        Some(s) => s,
+        None => return MutateResult::Err(ProtocolError::InvalidParams),
+    };
+    let id = match Uuid::parse_str(id_str) {
+        Ok(u) => u,
+        Err(_) => return MutateResult::Err(ProtocolError::InvalidParams),
+    };
+    let session = match SessionRepo::new(db).get(&id) {
+        Ok(Some(s)) => s,
+        _ => return MutateResult::Err(ProtocolError::SessionNotFound),
+    };
+    if session.status.is_terminal() {
+        return MutateResult::Err(ProtocolError::SessionNotFound);
+    }
+    if let Some(target) = &session.tmux_session {
+        let _ = futures::executor::block_on(tmux.kill_session(target));
+    }
+    if SessionRepo::new(db)
+        .mark_finished(&id, chrono::Utc::now())
         .is_err()
     {
         return MutateResult::Err(ProtocolError::InternalError);

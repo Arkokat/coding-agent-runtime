@@ -3,8 +3,8 @@
 use agentd::db::Db;
 use agentd::db::repo::SessionRepo;
 use agentd::handlers::mutate;
-use agentd::tmux::MockTmux;
-use agentd_protocol::{Method, SessionSource, SessionStatus};
+use agentd::tmux::{MockTmux, Tmux};
+use agentd_protocol::{AgentType, Method, Session, SessionSource, SessionStatus};
 use uuid::Uuid;
 
 fn fresh_db() -> Db {
@@ -148,18 +148,28 @@ fn session_dismiss_error_only_works_on_errored() {
 }
 
 #[test]
-fn session_jump_and_kill_are_placeholders() {
-    mutate::reset_shutdown_for_tests();
+fn session_kill_removes_tmux_and_marks_finished() {
     let db = fresh_db();
     let tmux = MockTmux::new();
-    let id = insert(&db);
-    let r1 = mutate::dispatch(
-        Method::SESSION_JUMP,
+    let id = insert_started_session(&db, "killable");
+
+    agentd::db::repo::SessionRepo::new(&db)
+        .update_tmux(&id, Some("killable"), Some("%1"))
+        .expect("update_tmux");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _ = rt.block_on(tmux.new_session("killable", "/tmp"));
+
+    let r = mutate::dispatch(
+        Method::SESSION_KILL,
         serde_json::json!({"id": id.to_string()}),
         &db,
         &tmux,
     );
-    assert!(r1.into_err().is_some(), "jump needs Tmux (Task 19)");
+    let v: serde_json::Value = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["status"], "finished", "got {v}");
 
     let r2 = mutate::dispatch(
         Method::SESSION_KILL,
@@ -167,7 +177,85 @@ fn session_jump_and_kill_are_placeholders() {
         &db,
         &tmux,
     );
-    assert!(r2.into_err().is_some(), "kill needs Tmux (Task 19)");
+    let err = r2.into_err().expect("err");
+    assert_eq!(err.code(), -32001);
+}
+
+#[test]
+fn session_kill_unknown_session_returns_not_found() {
+    let db = fresh_db();
+    let tmux = MockTmux::new();
+    let r = mutate::dispatch(
+        Method::SESSION_KILL,
+        serde_json::json!({"id": Uuid::now_v7().to_string()}),
+        &db,
+        &tmux,
+    );
+    let err = r.into_err().expect("err");
+    assert_eq!(err.code(), -32001);
+}
+
+#[test]
+fn session_jump_succeeds_for_existing_tmux_session() {
+    let db = fresh_db();
+    let tmux = MockTmux::new();
+    let id = insert_started_session(&db, "jumpy");
+    agentd::db::repo::SessionRepo::new(&db)
+        .update_tmux(&id, Some("jumpy"), Some("%1"))
+        .expect("update_tmux");
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _ = rt.block_on(tmux.new_session("jumpy", "/tmp"));
+
+    let r = mutate::dispatch(
+        Method::SESSION_JUMP,
+        serde_json::json!({"id": id.to_string()}),
+        &db,
+        &tmux,
+    );
+    let v: serde_json::Value = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["ok"], true);
+}
+
+#[test]
+fn session_jump_unknown_session_returns_not_found() {
+    let db = fresh_db();
+    let tmux = MockTmux::new();
+    let r = mutate::dispatch(
+        Method::SESSION_JUMP,
+        serde_json::json!({"id": Uuid::now_v7().to_string()}),
+        &db,
+        &tmux,
+    );
+    let err = r.into_err().expect("err");
+    assert_eq!(err.code(), -32001);
+}
+
+// Helper: insert a `starting` session row with the given display name.
+fn insert_started_session(db: &agentd::db::Db, name: &str) -> uuid::Uuid {
+    let s = Session {
+        id: Uuid::now_v7(),
+        agent_type: AgentType::Opencode,
+        working_dir: "/tmp/x".into(),
+        tmux_session: None,
+        tmux_pane_id: None,
+        display_name: name.into(),
+        status: SessionStatus::Starting,
+        current_task: None,
+        model: None,
+        context_used_tokens: None,
+        context_total_tokens: None,
+        cost_usd: None,
+        source: SessionSource::Cli,
+        created_at: chrono::Utc::now(),
+        last_event_at: None,
+        finished_at: None,
+        metadata: serde_json::json!({}),
+    };
+    SessionRepo::new(db).insert(&s).expect("insert");
+    s.id
 }
 
 #[test]
