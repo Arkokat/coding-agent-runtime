@@ -34,10 +34,29 @@ pub enum MutateResult {
 }
 
 impl serde::Serialize for MutateResult {
+    /// Serialize as the JSON-RPC 2.0 result/error shape:
+    /// - `Ok(v)` → `v` (the raw result value)
+    /// - `Err(e)` → `{"code": -32602, "message": "..."}` (the JSON-RPC
+    ///   error object, NOT the tagged-enum shape `ProtocolError` would
+    ///   produce via its derived `Serialize`).
+    ///
+    /// This lets the handler / router convert a `MutateResult` to
+    /// the right wire shape with a single `serde_json::to_value`
+    /// call.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        #[serde(untagged)]
+        enum Repr<'a> {
+            Ok(&'a Value),
+            Err { code: i32, message: String },
+        }
         match self {
-            MutateResult::Ok(v) => v.serialize(serializer),
-            MutateResult::Err(e) => e.serialize(serializer),
+            MutateResult::Ok(v) => Repr::Ok(v).serialize(serializer),
+            MutateResult::Err(e) => Repr::Err {
+                code: e.code(),
+                message: e.to_string(),
+            }
+            .serialize(serializer),
         }
     }
 }
@@ -185,6 +204,30 @@ fn session_dismiss_error(params: Value, db: &Db) -> MutateResult {
     }
 }
 
+/// Drive an async future to completion from a sync context, choosing
+/// the most efficient driver available:
+///
+/// - When called from inside a Tokio runtime (production: the
+///   control UDS handler is on `spawn_blocking` inside the
+///   daemon's multi-thread runtime), use
+///   `tokio::task::block_in_place` + `Handle::block_on` so the
+///   existing runtime drives the future. This is required for
+///   `RealTmux`, which awaits `tokio::process::Command::output` —
+///   a fresh single-thread runtime (from
+///   `futures::executor::block_on`) can deadlock or panic when
+///   nested inside the daemon's multi-thread runtime.
+///
+/// - When called from a bare `#[test]` (no runtime active), fall
+///   back to `futures::executor::block_on`, which builds a tiny
+///   current-thread runtime just for this call. This keeps the
+///   existing `handlers_mutate` test layout working.
+fn run_async<F: std::future::Future>(fut: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => futures::executor::block_on(fut),
+    }
+}
+
 /// Handler for `session.jump`: switch the connected tmux client to the
 /// session's tmux window. Returns `SessionNotFound` for missing sessions
 /// or missing tmux bindings, and surfaces tmux errors as `SessionNotFound`.
@@ -205,7 +248,7 @@ fn session_jump(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
         Some(t) => t,
         None => return MutateResult::Err(ProtocolError::InvalidParams),
     };
-    match futures::executor::block_on(tmux.switch_client(&target)) {
+    match run_async(tmux.switch_client(&target)) {
         Ok(()) => MutateResult::Ok(json!({"ok": true})),
         Err(_) => MutateResult::Err(ProtocolError::SessionNotFound),
     }
@@ -231,7 +274,7 @@ fn session_kill(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
         return MutateResult::Err(ProtocolError::SessionNotFound);
     }
     if let Some(target) = &session.tmux_session {
-        let _ = futures::executor::block_on(tmux.kill_session(target));
+        let _ = run_async(tmux.kill_session(target));
     }
     if SessionRepo::new(db)
         .mark_finished(&id, chrono::Utc::now())
@@ -245,5 +288,27 @@ fn session_kill(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
             Err(_) => MutateResult::Err(ProtocolError::InternalError),
         },
         _ => MutateResult::Err(ProtocolError::InternalError),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutate_result_ok_serializes_as_inner_value() {
+        let r = MutateResult::Ok(json!({"foo": 1}));
+        let v: Value = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["foo"], 1);
+    }
+
+    #[test]
+    fn mutate_result_err_serializes_as_json_rpc_error_object() {
+        let r = MutateResult::Err(ProtocolError::PluginNotAuthoritative);
+        let v: Value = serde_json::to_value(&r).unwrap();
+        assert!(v.is_object(), "expected object, got {v}");
+        assert!(v.get("code").is_some(), "missing `code`, got {v}");
+        assert!(v.get("message").is_some(), "missing `message`, got {v}");
+        assert_eq!(v["code"], -32004);
     }
 }
