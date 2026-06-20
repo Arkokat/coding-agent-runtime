@@ -1,7 +1,8 @@
 //! TUI key handler. Maps keys to state mutations and `ControlClient` RPCs.
 
 use crate::control_client::ControlClient;
-use crate::tui::state::{NewModal, RenameModal, TuiState};
+use crate::tui::new_modal;
+use crate::tui::state::{RenameModal, TuiState};
 use agentd_protocol::Method;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::time::Instant;
@@ -28,7 +29,8 @@ pub async fn handle_key(state: &mut TuiState, key: KeyEvent, client: &ControlCli
     match key.code {
         KeyCode::Esc | KeyCode::Char('q' | 'Q') => return true,
         KeyCode::Char('c' | 'C') => {
-            open_new_modal(state, client).await;
+            let modal = new_modal::open(client).await;
+            state.new_modal = Some(modal);
         }
         KeyCode::Char('r' | 'R') => {
             open_rename_modal(state);
@@ -69,53 +71,6 @@ fn open_rename_modal(state: &mut TuiState) {
             input: s.display_name.clone(),
         });
     }
-}
-
-async fn open_new_modal(state: &mut TuiState, client: &ControlClient) {
-    // Query recents from `session.list_active` aggregated by working_dir.
-    let recents = match client
-        .call(Method::SESSION_LIST_ACTIVE, serde_json::json!({}))
-        .await
-    {
-        Ok(v) => extract_recents(&v),
-        Err(_) => Vec::new(),
-    };
-    state.new_modal = Some(NewModal {
-        query: String::new(),
-        recents,
-    });
-}
-
-fn extract_recents(
-    value: &serde_json::Value,
-) -> Vec<(std::path::PathBuf, chrono::DateTime<chrono::Utc>)> {
-    use std::collections::BTreeMap;
-    let mut by_dir: BTreeMap<std::path::PathBuf, chrono::DateTime<chrono::Utc>> = BTreeMap::new();
-    if let Some(arr) = value.as_array() {
-        for s in arr {
-            if let (Some(dir), Some(ts)) = (
-                s.get("working_dir").and_then(|v| v.as_str()),
-                s.get("last_event_at")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok()),
-            ) {
-                let path = std::path::PathBuf::from(dir);
-                let ts_utc = ts.with_timezone(&chrono::Utc);
-                by_dir
-                    .entry(path)
-                    .and_modify(|existing| {
-                        if ts_utc > *existing {
-                            *existing = ts_utc;
-                        }
-                    })
-                    .or_insert(ts_utc);
-            }
-        }
-    }
-    let mut v: Vec<_> = by_dir.into_iter().collect();
-    v.sort_by_key(|(_, ts)| std::cmp::Reverse(*ts)); // most recent first
-    v.truncate(10);
-    v
 }
 
 async fn jump_to_selected(state: &mut TuiState, client: &ControlClient) {
@@ -196,38 +151,34 @@ async fn handle_rename_modal_key(
 }
 
 #[allow(clippy::unused_async)] // kept `async` for symmetry with handle_rename_modal_key
-async fn handle_new_modal_key(
-    state: &mut TuiState,
-    key: KeyEvent,
-    _client: &ControlClient,
-) -> bool {
+async fn handle_new_modal_key(state: &mut TuiState, key: KeyEvent, client: &ControlClient) -> bool {
     let Some(mut modal) = state.new_modal.take() else {
         return false;
     };
-    match key.code {
-        KeyCode::Esc => {}
-        KeyCode::Enter => {
-            // Use the first matching recent, or the typed query.
-            let q = modal.query.to_lowercase();
-            let target = modal
-                .recents
-                .iter()
-                .find(|(p, _)| q.is_empty() || p.to_string_lossy().to_lowercase().contains(&q))
-                .map_or_else(|| std::path::PathBuf::from("."), |(p, _)| p.clone());
-            // Stash target for the event loop (Task 7) to pick up via
-            // `state.pending_create` and call `session.create` on the daemon.
-            state.pending_create = Some(target);
-        }
-        KeyCode::Backspace => {
-            modal.query.pop();
+    let outcome = new_modal::apply_key(&mut modal, key);
+    match outcome {
+        new_modal::NewModalOutcome::Stay => {
             state.new_modal = Some(modal);
         }
-        KeyCode::Char(c) => {
-            modal.query.push(c);
-            state.new_modal = Some(modal);
+        new_modal::NewModalOutcome::Cancel => {
+            state.new_modal = None;
         }
-        _ => {
-            state.new_modal = Some(modal);
+        new_modal::NewModalOutcome::Commit(path) => {
+            state.new_modal = None;
+            let _ = client
+                .call(
+                    Method::SESSION_CREATE,
+                    serde_json::json!({
+                        "agent_type": "opencode",
+                        "working_dir": path.to_string_lossy(),
+                        "name": path.file_name().and_then(|n| n.to_str()).unwrap_or("session"),
+                    }),
+                )
+                .await;
+            state.status_message = Some((
+                format!("Creating session in {}", path.display()),
+                Instant::now(),
+            ));
         }
     }
     state.dirty = true;
