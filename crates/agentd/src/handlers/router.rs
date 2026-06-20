@@ -18,6 +18,7 @@
 //! no-op for v1 (the registry removes the entry on stream close).
 
 use crate::db::Db;
+use crate::event_bus::EventBus;
 use crate::handlers::subscriber_registry::SubscriberRegistry;
 use crate::handlers::{mutate, read};
 use crate::paths::Paths;
@@ -40,6 +41,7 @@ pub fn handle_client(
     paths: &Paths,
     tmux: &dyn Tmux,
     registry: &SubscriberRegistry,
+    bus: &EventBus,
 ) {
     let writer_stream = match stream.try_clone() {
         Ok(s) => s,
@@ -116,6 +118,7 @@ pub fn handle_client(
         req.get("params").cloned().unwrap_or(Value::Null),
         &db,
         tmux,
+        bus,
         &id,
     );
     let _ = write_response(&mut writer, &resp);
@@ -239,11 +242,18 @@ fn is_unsubscribe_frame(line: &str) -> bool {
 
 /// Dispatch `method` through the read and mutate handlers. Returns
 /// the JSON-RPC response object (success or error).
-fn dispatch(method: &str, params: Value, db: &Db, tmux: &dyn Tmux, id: &Value) -> Value {
+fn dispatch(
+    method: &str,
+    params: Value,
+    db: &Db,
+    tmux: &dyn Tmux,
+    bus: &EventBus,
+    id: &Value,
+) -> Value {
     if let Some(value) = read::dispatch(method, params.clone(), db) {
         return json_rpc_result(id, &value);
     }
-    let mut_result = mutate::dispatch(method, params, db, tmux);
+    let mut_result = mutate::dispatch(method, params, db, tmux, bus);
     match mut_result {
         mutate::MutateResult::Ok(v) => json_rpc_result(id, &v),
         mutate::MutateResult::Err(e) => json_rpc_error(id, e),

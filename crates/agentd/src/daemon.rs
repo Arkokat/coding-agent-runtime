@@ -187,6 +187,7 @@ impl Daemon {
         let paths_for_handler = self.paths.clone();
         let tmux_for_handler = Arc::clone(&self.tmux);
         let registry_for_handler = Arc::clone(&registry);
+        let bus_for_handler = self.bus.clone();
         let control_handle = tokio::spawn(async move {
             control
                 .serve(move |stream| {
@@ -195,6 +196,7 @@ impl Daemon {
                         &paths_for_handler,
                         &*tmux_for_handler,
                         &registry_for_handler,
+                        &bus_for_handler,
                     );
                 })
                 .await;

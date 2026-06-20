@@ -7,6 +7,7 @@
 
 use crate::db::Db;
 use crate::db::repo::SessionRepo;
+use crate::event_bus::{Event, EventBus};
 use crate::tmux::Tmux;
 use agentd_protocol::{AgentType, Method, ProtocolError, Session, SessionSource, SessionStatus};
 use serde_json::{Value, json};
@@ -78,22 +79,39 @@ impl MutateResult {
 
 /// Dispatch a mutating JSON-RPC method. Returns `MutateResult::Err(MethodNotFound)`
 /// for methods that are not mutations (router should try the read dispatcher).
-pub fn dispatch(method: &str, params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
+///
+/// On success, each mutating handler emits an event on `bus` describing the
+/// state change. The bus is a side channel; the JSON-RPC response still carries
+/// the post-state value of the changed row (or `{"ok": true}` for
+/// `session.jump` and `daemon.shutdown`).
+pub fn dispatch(
+    method: &str,
+    params: Value,
+    db: &Db,
+    tmux: &dyn Tmux,
+    bus: &EventBus,
+) -> MutateResult {
     match method {
-        Method::SESSION_CREATE => session_create(params, db),
-        Method::SESSION_RENAME => session_rename(params, db),
-        Method::SESSION_DISMISS_ERROR => session_dismiss_error(params, db),
-        Method::SESSION_JUMP => session_jump(params, db, tmux),
-        Method::SESSION_KILL => session_kill(params, db, tmux),
+        Method::SESSION_CREATE => session_create(params, db, bus),
+        Method::SESSION_RENAME => session_rename(params, db, bus),
+        Method::SESSION_DISMISS_ERROR => session_dismiss_error(params, db, bus),
+        Method::SESSION_JUMP => session_jump(params, db, tmux, bus),
+        Method::SESSION_KILL => session_kill(params, db, tmux, bus),
         Method::DAEMON_SHUTDOWN => {
             SHUTDOWN.store(true, Ordering::SeqCst);
+            bus.emit(Event {
+                kind: "daemon.shutting_down".into(),
+                session_id: None,
+                payload: json!({}),
+                ts: chrono::Utc::now(),
+            });
             MutateResult::Ok(json!({"ok": true}))
         }
         _ => MutateResult::Err(ProtocolError::MethodNotFound),
     }
 }
 
-fn session_create(params: Value, db: &Db) -> MutateResult {
+fn session_create(params: Value, db: &Db, bus: &EventBus) -> MutateResult {
     let agent_type = match params.get("agent_type").and_then(Value::as_str) {
         Some(s) => match s {
             "opencode" => AgentType::Opencode,
@@ -142,13 +160,20 @@ fn session_create(params: Value, db: &Db) -> MutateResult {
     if SessionRepo::new(db).insert(&session).is_err() {
         return MutateResult::Err(ProtocolError::InternalError);
     }
+    let payload = serde_json::to_value(&session).unwrap_or(Value::Null);
+    bus.emit(Event {
+        kind: "session.created".into(),
+        session_id: Some(session.id),
+        payload,
+        ts: chrono::Utc::now(),
+    });
     match serde_json::to_value(&session) {
         Ok(v) => MutateResult::Ok(v),
         Err(_) => MutateResult::Err(ProtocolError::InternalError),
     }
 }
 
-fn session_rename(params: Value, db: &Db) -> MutateResult {
+fn session_rename(params: Value, db: &Db, bus: &EventBus) -> MutateResult {
     let id_str = match params.get("id").and_then(Value::as_str) {
         Some(s) => s,
         None => return MutateResult::Err(ProtocolError::InvalidParams),
@@ -164,6 +189,12 @@ fn session_rename(params: Value, db: &Db) -> MutateResult {
     if SessionRepo::new(db).update_rename(&id, name).is_err() {
         return MutateResult::Err(ProtocolError::SessionNotFound);
     }
+    bus.emit(Event {
+        kind: "session.renamed".into(),
+        session_id: Some(id),
+        payload: json!({"display_name": name}),
+        ts: chrono::Utc::now(),
+    });
     match SessionRepo::new(db).get(&id) {
         Ok(Some(s)) => match serde_json::to_value(s) {
             Ok(v) => MutateResult::Ok(v),
@@ -173,7 +204,7 @@ fn session_rename(params: Value, db: &Db) -> MutateResult {
     }
 }
 
-fn session_dismiss_error(params: Value, db: &Db) -> MutateResult {
+fn session_dismiss_error(params: Value, db: &Db, bus: &EventBus) -> MutateResult {
     let id_str = match params.get("id").and_then(Value::as_str) {
         Some(s) => s,
         None => return MutateResult::Err(ProtocolError::InvalidParams),
@@ -195,6 +226,12 @@ fn session_dismiss_error(params: Value, db: &Db) -> MutateResult {
     {
         return MutateResult::Err(ProtocolError::InternalError);
     }
+    bus.emit(Event {
+        kind: "session.dismissed_error".into(),
+        session_id: Some(id),
+        payload: json!({}),
+        ts: chrono::Utc::now(),
+    });
     match SessionRepo::new(db).get(&id) {
         Ok(Some(s)) => match serde_json::to_value(s) {
             Ok(v) => MutateResult::Ok(v),
@@ -231,7 +268,7 @@ fn run_async<F: std::future::Future>(fut: F) -> F::Output {
 /// Handler for `session.jump`: switch the connected tmux client to the
 /// session's tmux window. Returns `SessionNotFound` for missing sessions
 /// or missing tmux bindings, and surfaces tmux errors as `SessionNotFound`.
-fn session_jump(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
+fn session_jump(params: Value, db: &Db, tmux: &dyn Tmux, bus: &EventBus) -> MutateResult {
     let id_str = match params.get("id").and_then(Value::as_str) {
         Some(s) => s,
         None => return MutateResult::Err(ProtocolError::InvalidParams),
@@ -249,7 +286,15 @@ fn session_jump(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
         None => return MutateResult::Err(ProtocolError::InvalidParams),
     };
     match run_async(tmux.switch_client(&target)) {
-        Ok(()) => MutateResult::Ok(json!({"ok": true})),
+        Ok(()) => {
+            bus.emit(Event {
+                kind: "session.jumped".into(),
+                session_id: Some(id),
+                payload: json!({}),
+                ts: chrono::Utc::now(),
+            });
+            MutateResult::Ok(json!({"ok": true}))
+        }
         Err(_) => MutateResult::Err(ProtocolError::SessionNotFound),
     }
 }
@@ -257,7 +302,7 @@ fn session_jump(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
 /// Handler for `session.kill`: tear down the session's tmux window
 /// (if any) and mark the row `finished`. Returns the updated session on
 /// success, or `SessionNotFound` for missing or already-finished sessions.
-fn session_kill(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
+fn session_kill(params: Value, db: &Db, tmux: &dyn Tmux, bus: &EventBus) -> MutateResult {
     let id_str = match params.get("id").and_then(Value::as_str) {
         Some(s) => s,
         None => return MutateResult::Err(ProtocolError::InvalidParams),
@@ -282,6 +327,12 @@ fn session_kill(params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
     {
         return MutateResult::Err(ProtocolError::InternalError);
     }
+    bus.emit(Event {
+        kind: "session.killed".into(),
+        session_id: Some(id),
+        payload: json!({}),
+        ts: chrono::Utc::now(),
+    });
     match SessionRepo::new(db).get(&id) {
         Ok(Some(s)) => match serde_json::to_value(s) {
             Ok(v) => MutateResult::Ok(v),

@@ -2,6 +2,7 @@
 
 use agentd::db::Db;
 use agentd::db::repo::SessionRepo;
+use agentd::event_bus::EventBus;
 use agentd::handlers::mutate;
 use agentd::tmux::{MockTmux, Tmux};
 use agentd_protocol::{AgentType, Method, Session, SessionSource, SessionStatus};
@@ -52,6 +53,7 @@ fn session_create_inserts_new_row() {
         }),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let v = r.into_value().expect("ok");
     assert_eq!(v["working_dir"], "/tmp/q");
@@ -71,6 +73,7 @@ fn session_create_rejects_unknown_agent_type() {
         serde_json::json!({"agent_type": "mystery", "working_dir": "/tmp/x"}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32602);
@@ -87,6 +90,7 @@ fn session_rename_updates_display_name() {
         serde_json::json!({"id": id.to_string(), "name": "renamed"}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let v = r.into_value().expect("ok");
     assert_eq!(v["display_name"], "renamed");
@@ -107,6 +111,7 @@ fn session_rename_missing_returns_session_not_found() {
         serde_json::json!({"id": Uuid::now_v7().to_string(), "name": "x"}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32001);
@@ -126,6 +131,7 @@ fn session_dismiss_error_clears_errored_status() {
         serde_json::json!({"id": id.to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let v = r.into_value().expect("ok");
     assert_eq!(v["status"], "idle");
@@ -142,6 +148,7 @@ fn session_dismiss_error_only_works_on_errored() {
         serde_json::json!({"id": id.to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32602, "must reject non-errored status");
@@ -167,6 +174,7 @@ fn session_kill_removes_tmux_and_marks_finished() {
         serde_json::json!({"id": id.to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let v: serde_json::Value = serde_json::to_value(&r).unwrap();
     assert_eq!(v["status"], "finished", "got {v}");
@@ -176,6 +184,7 @@ fn session_kill_removes_tmux_and_marks_finished() {
         serde_json::json!({"id": id.to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let err = r2.into_err().expect("err");
     assert_eq!(err.code(), -32001);
@@ -190,6 +199,7 @@ fn session_kill_unknown_session_returns_not_found() {
         serde_json::json!({"id": Uuid::now_v7().to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32001);
@@ -214,6 +224,7 @@ fn session_jump_succeeds_for_existing_tmux_session() {
         serde_json::json!({"id": id.to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let v: serde_json::Value = serde_json::to_value(&r).unwrap();
     assert_eq!(v["ok"], true);
@@ -228,6 +239,7 @@ fn session_jump_unknown_session_returns_not_found() {
         serde_json::json!({"id": Uuid::now_v7().to_string()}),
         &db,
         &tmux,
+        &EventBus::new(16),
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32001);
@@ -263,7 +275,13 @@ fn daemon_shutdown_sets_flag() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
     let tmux = MockTmux::new();
-    let r = mutate::dispatch(Method::DAEMON_SHUTDOWN, serde_json::json!({}), &db, &tmux);
+    let r = mutate::dispatch(
+        Method::DAEMON_SHUTDOWN,
+        serde_json::json!({}),
+        &db,
+        &tmux,
+        &EventBus::new(16),
+    );
     let v = r.into_value().expect("ok");
     assert_eq!(v["ok"], true);
     assert!(mutate::shutdown_requested());

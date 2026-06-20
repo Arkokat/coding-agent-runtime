@@ -8,6 +8,7 @@
 
 use crate::db::Db;
 use crate::db::repo::{EventRepo, SessionRepo};
+use crate::event_bus::{Event, EventBus};
 use agentd_protocol::{AgentType, Method, ProtocolError, Session, SessionSource, SessionStatus};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -19,18 +20,31 @@ pub type PluginResult = Result<Value, ProtocolError>;
 /// Dispatch a plugin-side JSON-RPC method. `plugin_name` is the
 /// authenticated plugin (server has already verified it's in the
 /// allowlist before this is called).
-pub fn dispatch(method: &str, params: Value, db: &Db, plugin_name: &str) -> PluginResult {
+///
+/// On success, `session.discover` and the mutating branches of
+/// `session.report_event` (`status_changed` / `task_changed` /
+/// `usage_updated` / `finished`) and `plugin.hello` emit a state-change
+/// event on `bus`. Other handlers (`plugin.heartbeat`, `plugin.bye`,
+/// non-mutating `session.report_event` kinds like `session.message`)
+/// are pure RPCs and do not emit.
+pub fn dispatch(
+    method: &str,
+    params: Value,
+    db: &Db,
+    plugin_name: &str,
+    bus: &EventBus,
+) -> PluginResult {
     match method {
-        Method::PLUGIN_HELLO => plugin_hello(params, db, plugin_name),
-        Method::SESSION_DISCOVER => session_discover(params, db, plugin_name),
-        Method::SESSION_REPORT_EVENT => session_report_event(params, db, plugin_name),
+        Method::PLUGIN_HELLO => plugin_hello(params, db, plugin_name, bus),
+        Method::SESSION_DISCOVER => session_discover(params, db, plugin_name, bus),
+        Method::SESSION_REPORT_EVENT => session_report_event(params, db, plugin_name, bus),
         Method::PLUGIN_HEARTBEAT => plugin_heartbeat(),
         Method::PLUGIN_BYE => plugin_bye(),
         _ => Err(ProtocolError::MethodNotFound),
     }
 }
 
-fn plugin_hello(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
+fn plugin_hello(params: Value, db: &Db, plugin_name: &str, bus: &EventBus) -> PluginResult {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -45,6 +59,16 @@ fn plugin_hello(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
     let binary = format!("agentd-plugin-{name}");
     let _ = crate::db::repo::PluginRepo::new(db).upsert(name, &binary, &socket_name, true);
     let _ = crate::db::repo::PluginRepo::new(db).set_last_connected(name, chrono::Utc::now());
+    bus.emit(Event {
+        kind: "plugin.connected".into(),
+        session_id: None,
+        payload: json!({
+            "name": name,
+            "binary": binary,
+            "socket_name": socket_name,
+        }),
+        ts: chrono::Utc::now(),
+    });
     Ok(json!({
         "ok": true,
         "plugin_id": name,
@@ -52,7 +76,7 @@ fn plugin_hello(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
     }))
 }
 
-fn session_discover(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
+fn session_discover(params: Value, db: &Db, plugin_name: &str, bus: &EventBus) -> PluginResult {
     let tmux_session = params
         .get("tmux_session")
         .and_then(Value::as_str)
@@ -104,10 +128,17 @@ fn session_discover(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
     SessionRepo::new(db)
         .insert(&session)
         .map_err(|_| ProtocolError::InternalError)?;
+    bus.emit(Event {
+        kind: "session.discovered".into(),
+        session_id: Some(id),
+        payload: serde_json::to_value(&session).unwrap_or(json!({})),
+        ts: chrono::Utc::now(),
+    });
     Ok(json!({"ok": true, "session_id": id.to_string()}))
 }
 
-fn session_report_event(params: Value, db: &Db, plugin_name: &str) -> PluginResult {
+#[allow(clippy::too_many_lines)]
+fn session_report_event(params: Value, db: &Db, plugin_name: &str, bus: &EventBus) -> PluginResult {
     let session_id_str = params
         .get("session_id")
         .and_then(Value::as_str)
@@ -153,7 +184,10 @@ fn session_report_event(params: Value, db: &Db, plugin_name: &str) -> PluginResu
         .insert(&id, kind, &payload)
         .map_err(|_| ProtocolError::InternalError)?;
 
-    // Side effects per kind (spec section 9 lifecycle table).
+    // Side effects per kind (spec section 9 lifecycle table). Each mutating
+    // kind persists the change to the session row, then emits a bus event
+    // carrying just the changed field so subscribers can patch UI state
+    // without refetching the full session.
     use agentd_protocol::SessionStatus::*;
     if kind == "session.status_changed" {
         if let Some(s) = payload.get("status").and_then(Value::as_str) {
@@ -169,12 +203,24 @@ fn session_report_event(params: Value, db: &Db, plugin_name: &str) -> PluginResu
             SessionRepo::new(db)
                 .update_status(&id, new, ts)
                 .map_err(|_| ProtocolError::InternalError)?;
+            bus.emit(Event {
+                kind: "session.status_changed".into(),
+                session_id: Some(id),
+                payload: json!({"status": s}),
+                ts: chrono::Utc::now(),
+            });
         }
     } else if kind == "session.task_changed" {
         if let Some(task) = payload.get("task").and_then(Value::as_str) {
             SessionRepo::new(db)
                 .update_task(&id, Some(task), ts)
                 .map_err(|_| ProtocolError::InternalError)?;
+            bus.emit(Event {
+                kind: "session.task_changed".into(),
+                session_id: Some(id),
+                payload: json!({"task": task}),
+                ts: chrono::Utc::now(),
+            });
         }
     } else if kind == "session.usage_updated" {
         let used = payload.get("used").and_then(Value::as_u64);
@@ -183,10 +229,29 @@ fn session_report_event(params: Value, db: &Db, plugin_name: &str) -> PluginResu
         SessionRepo::new(db)
             .update_usage(&id, used, total, cost, ts)
             .map_err(|_| ProtocolError::InternalError)?;
+        let used_val = used.map(Value::from);
+        let total_val = total.map(Value::from);
+        let cost_val = cost.map(Value::from);
+        bus.emit(Event {
+            kind: "session.usage_updated".into(),
+            session_id: Some(id),
+            payload: json!({
+                "used": used_val,
+                "total": total_val,
+                "cost_usd": cost_val,
+            }),
+            ts: chrono::Utc::now(),
+        });
     } else if kind == "session.finished" {
         SessionRepo::new(db)
             .mark_finished(&id, ts)
             .map_err(|_| ProtocolError::InternalError)?;
+        bus.emit(Event {
+            kind: "session.finished".into(),
+            session_id: Some(id),
+            payload: json!({}),
+            ts: chrono::Utc::now(),
+        });
     }
 
     Ok(json!({

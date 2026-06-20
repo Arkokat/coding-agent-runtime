@@ -2,6 +2,7 @@
 
 use agentd::db::Db;
 use agentd::db::repo::SessionRepo;
+use agentd::event_bus::EventBus;
 use agentd::handlers::plugin_handlers;
 use agentd_protocol::{Method, SessionSource, SessionStatus};
 use uuid::Uuid;
@@ -45,6 +46,7 @@ fn plugin_hello_returns_heartbeat_interval() {
         serde_json::json!({"name": "opencode", "version": "1.0.0", "pid": 1234, "binary_path": "/usr/bin/agentd-plugin-opencode"}),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let v = r.expect("ok");
     assert_eq!(v["ok"], true);
@@ -63,6 +65,7 @@ fn session_discover_inserts_row_and_returns_id() {
         }),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let v = r.expect("ok");
     assert_eq!(v["ok"], true);
@@ -90,6 +93,7 @@ fn session_report_event_writes_to_event_log() {
         }),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let v = r.expect("ok");
     assert_eq!(v["accepted"], true);
@@ -113,6 +117,7 @@ fn session_report_event_missing_session_errors() {
         }),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let err = r.expect_err("err");
     assert_eq!(err.code(), -32001);
@@ -132,6 +137,7 @@ fn session_report_event_returns_event_rowid_not_session_id() {
         }),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let v = r.expect("ok");
     let event_id = v["event_id"].as_str().expect("event_id str");
@@ -161,6 +167,7 @@ fn session_report_event_uses_agent_ts_for_last_event_at() {
         }),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let _ = r.expect("ok");
 }
@@ -179,6 +186,7 @@ fn session_report_event_rejects_non_owning_plugin_for_status_changed() {
             }),
             &db,
             "opencode",
+            &EventBus::new(16),
         )
         .expect("discover ok");
         let id_str = r["session_id"]
@@ -199,6 +207,7 @@ fn session_report_event_rejects_non_owning_plugin_for_status_changed() {
         }),
         &db,
         "claude-code",
+        &EventBus::new(16),
     );
     let err = r.expect_err("non-owning plugin must be rejected");
     assert_eq!(err.code(), -32004, "got {}: {}", err.code(), err);
@@ -212,6 +221,7 @@ fn plugin_heartbeat_returns_counts() {
         serde_json::json!({}),
         &db,
         "opencode",
+        &EventBus::new(16),
     );
     let v = r.expect("ok");
     assert_eq!(v["ok"], true);
@@ -221,7 +231,13 @@ fn plugin_heartbeat_returns_counts() {
 #[test]
 fn plugin_bye_marks_disconnect() {
     let db = fresh_db();
-    let r = plugin_handlers::dispatch(Method::PLUGIN_BYE, serde_json::json!({}), &db, "opencode");
+    let r = plugin_handlers::dispatch(
+        Method::PLUGIN_BYE,
+        serde_json::json!({}),
+        &db,
+        "opencode",
+        &EventBus::new(16),
+    );
     let v = r.expect("ok");
     assert_eq!(v["ok"], true);
 }
