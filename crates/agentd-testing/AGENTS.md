@@ -6,7 +6,7 @@ Test harness, fixtures, and HTTP mock for agentd.
 - `Harness` — temp dir with XDG layout, cleanup on drop
 - `test_agent` binary (built from `src/bin/test_agent.rs`) — reads script, emits events
 - `HttpMock` — axum server with canned scenario responses
-- `ScriptedSession` — builder for common session flows
+- `ScriptedSession` — static factory methods for common session flows
 - `AgentEnv` — per-agent base URL helpers (env vars or CLI args)
 
 ## Constraints

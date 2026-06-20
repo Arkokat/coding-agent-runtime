@@ -31,7 +31,7 @@ impl PluginSupervisor {
     pub fn new(bus: EventBus, db: &Db, manifest: PluginsManifest) -> Self {
         Self {
             bus: SharedEventBus::new(bus),
-            db: Db::clone(db),
+            db: Db::reopen(db),
             manifest,
             connected: Mutex::new(Vec::new()),
         }
@@ -84,9 +84,13 @@ impl PluginSupervisor {
 }
 
 impl Db {
-    /// Cheap clone: opens a new connection to the same file. Used by
-    /// `PluginSupervisor` so the supervisor can outlive the original
-    /// `Db` handle scope.
+    /// Open a second connection to the same `SQLite` file this `Db` is
+    /// using. Used by `PluginSupervisor` so the supervisor can outlive
+    /// the original `Db` handle scope.
+    ///
+    /// Note: this is NOT a cheap handle clone — it opens a fresh
+    /// `rusqlite::Connection`. The v1 single-writer model makes that
+    /// safe; for v2 multi-writer, swap to `Arc<Connection>` or a pool.
     ///
     /// # Panics
     /// Panics if the underlying connection has no file path (in-memory DB)
@@ -96,8 +100,8 @@ impl Db {
         clippy::return_self_not_must_use,
         clippy::expect_used
     )]
-    pub fn clone(&self) -> Db {
-        Db::open(Path::new(self.conn().path().expect("path"))).expect("clone")
+    pub fn reopen(&self) -> Db {
+        Db::open(Path::new(self.conn().path().expect("path"))).expect("reopen")
     }
 }
 

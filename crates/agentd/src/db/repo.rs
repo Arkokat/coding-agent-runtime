@@ -12,8 +12,6 @@ pub enum RepoError {
     Sqlite(#[from] SqliteError),
     #[error("session not found: {0}")]
     NotFound(Uuid),
-    #[error("invalid status string: {0}")]
-    InvalidStatus(String),
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
