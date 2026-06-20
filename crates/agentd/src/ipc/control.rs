@@ -34,8 +34,7 @@ impl ControlServer {
         // created non-blocking from the start. Registering a blocking
         // socket with the tokio runtime triggers the unstable feature
         // gate `tokio_allow_from_blocking_fd` (see tokio#7172).
-        let listener = TokioUnixListener::bind(path)
-            .map_err(ControlError::Io)?;
+        let listener = TokioUnixListener::bind(path).map_err(ControlError::Io)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         let addr = path.to_path_buf();
         Ok(Self {

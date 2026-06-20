@@ -11,7 +11,7 @@ mod scripted;
 pub mod test_agent;
 
 pub use agent_env::AgentEnv;
-pub use harness::{test_runtime_dir, test_socket_path, Harness};
+pub use harness::{Harness, test_runtime_dir, test_socket_path};
 pub use http_mock::{Handle as HttpMockHandle, HttpMock, test_bind_addr};
 pub use scenario::{RequestMatch, Response, Scenario, ScenarioStep};
 pub use scripted::ScriptedSession;

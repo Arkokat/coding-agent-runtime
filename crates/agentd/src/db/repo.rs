@@ -43,14 +43,12 @@ impl<'a> SessionRepo<'a> {
     }
 
     /// Insert a new session row. Serializes `source` to a JSON-quoted string
-    /// (e.g. `"cli"`) for the TEXT column.
-    ///
-    /// # Panics
-    /// Panics if `serde_json::to_value(s.source)` fails (should never happen
-    /// for the enum's derived `Serialize`).
+    /// (e.g. `"cli"`) for the TEXT column. Falls back to `"cli"` on the
+    /// (unreachable in practice) case where the enum's derived `Serialize`
+    /// produces invalid JSON.
     pub fn insert(&self, s: &Session) -> Result<(), RepoError> {
-        let source_str = serde_json::to_string(&serde_json::to_value(s.source).unwrap())
-            .unwrap_or_else(|_| "\"cli\"".into());
+        let source_value = serde_json::to_value(s.source).unwrap_or(Value::String("cli".into()));
+        let source_str = serde_json::to_string(&source_value).unwrap_or_else(|_| "\"cli\"".into());
         self.db.conn().execute(
             "INSERT INTO sessions
              (id, agent_type, working_dir, tmux_session, tmux_pane_id, display_name,
@@ -113,10 +111,15 @@ impl<'a> SessionRepo<'a> {
             .collect())
     }
 
-    pub fn update_status(&self, id: &Uuid, status: SessionStatus) -> Result<(), RepoError> {
+    pub fn update_status(
+        &self,
+        id: &Uuid,
+        status: SessionStatus,
+        at: DateTime<Utc>,
+    ) -> Result<(), RepoError> {
         let n = self.db.conn().execute(
             "UPDATE sessions SET status = ?1, last_event_at = ?2 WHERE id = ?3",
-            params![status.to_string(), Utc::now().to_rfc3339(), id.to_string()],
+            params![status.to_string(), at.to_rfc3339(), id.to_string()],
         )?;
         if n == 0 {
             return Err(RepoError::NotFound(*id));
@@ -124,10 +127,15 @@ impl<'a> SessionRepo<'a> {
         Ok(())
     }
 
-    pub fn update_task(&self, id: &Uuid, task: Option<&str>) -> Result<(), RepoError> {
+    pub fn update_task(
+        &self,
+        id: &Uuid,
+        task: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<(), RepoError> {
         let n = self.db.conn().execute(
             "UPDATE sessions SET current_task = ?1, last_event_at = ?2 WHERE id = ?3",
-            params![task, Utc::now().to_rfc3339(), id.to_string()],
+            params![task, at.to_rfc3339(), id.to_string()],
         )?;
         if n == 0 {
             return Err(RepoError::NotFound(*id));
@@ -141,13 +149,14 @@ impl<'a> SessionRepo<'a> {
         used: Option<u64>,
         total: Option<u64>,
         cost: Option<f64>,
+        at: DateTime<Utc>,
     ) -> Result<(), RepoError> {
         let n = self.db.conn().execute(
             "UPDATE sessions
              SET context_used_tokens = ?1, context_total_tokens = ?2, cost_usd = ?3,
                  last_event_at = ?4
              WHERE id = ?5",
-            params![used, total, cost, Utc::now().to_rfc3339(), id.to_string()],
+            params![used, total, cost, at.to_rfc3339(), id.to_string()],
         )?;
         if n == 0 {
             return Err(RepoError::NotFound(*id));
@@ -166,11 +175,11 @@ impl<'a> SessionRepo<'a> {
         Ok(())
     }
 
-    pub fn mark_finished(&self, id: &Uuid) -> Result<(), RepoError> {
+    pub fn mark_finished(&self, id: &Uuid, at: DateTime<Utc>) -> Result<(), RepoError> {
         let n = self.db.conn().execute(
             "UPDATE sessions SET status = 'finished', finished_at = ?1, last_event_at = ?1
              WHERE id = ?2",
-            params![Utc::now().to_rfc3339(), id.to_string()],
+            params![at.to_rfc3339(), id.to_string()],
         )?;
         if n == 0 {
             return Err(RepoError::NotFound(*id));

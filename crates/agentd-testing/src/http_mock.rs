@@ -29,8 +29,7 @@ pub fn hash_body(bytes: &[u8]) -> String {
 
 /// Counter for the per-call port assignment. Starts at 31415 and wraps
 /// within the 85-port sandbox-allowed range (31415..=31499).
-static NEXT_TEST_PORT: std::sync::atomic::AtomicU16 =
-    std::sync::atomic::AtomicU16::new(31415);
+static NEXT_TEST_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(31415);
 
 /// Fixed TCP bind address used by `HttpMock::start` and the fixture tests.
 ///

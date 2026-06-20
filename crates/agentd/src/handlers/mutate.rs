@@ -55,7 +55,13 @@ pub fn dispatch(method: &str, params: Value, db: &Db) -> MutateResult {
         Method::SESSION_RENAME => session_rename(params, db),
         Method::SESSION_DISMISS_ERROR => session_dismiss_error(params, db),
         Method::SESSION_JUMP | Method::SESSION_KILL => {
-            // Real impl lands in Task 20 once the Tmux trait exists.
+            // Deferred to Plan 3 (assembled daemon runtime). The `Tmux`
+            // trait exists in `crate::tmux`, but the dispatcher signature
+            // does not thread it through yet, and the `daemon` command is
+            // still a stub. When Plan 3 wires the daemon boot sequence
+            // (§4 of the design spec), these handlers will be implemented
+            // here: jump -> `tmux.switch_client(name)`, kill ->
+            // `tmux.kill_session(name)` + `mark_finished`.
             MutateResult::Err(ProtocolError::InternalError)
         }
         Method::DAEMON_SHUTDOWN => {
@@ -163,7 +169,7 @@ fn session_dismiss_error(params: Value, db: &Db) -> MutateResult {
         return MutateResult::Err(ProtocolError::InvalidParams);
     }
     if SessionRepo::new(db)
-        .update_status(&id, SessionStatus::Idle)
+        .update_status(&id, SessionStatus::Idle, chrono::Utc::now())
         .is_err()
     {
         return MutateResult::Err(ProtocolError::InternalError);
