@@ -108,6 +108,11 @@ pub enum DaemonAction {
         /// Run in the foreground (don't fork).
         #[arg(long)]
         foreground: bool,
+        /// Run in the background, detached from the terminal. This is the
+        /// default; the flag exists for explicitness and so callers can
+        /// document intent.
+        #[arg(long)]
+        detach: bool,
     },
     /// Stop the running daemon.
     Stop,

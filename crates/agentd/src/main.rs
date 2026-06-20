@@ -96,7 +96,7 @@ fn daemon(action: DaemonAction) -> Result<()> {
     use agentd::plugins_manifest::PluginsManifest;
     use agentd::tmux::RealTmux;
     match action {
-        DaemonAction::Start { foreground } => {
+        DaemonAction::Start { foreground, .. } => {
             eprintln!("agentd daemon starting (foreground={foreground})");
             let paths = Paths::resolve();
             std::fs::create_dir_all(&paths.state_dir)?;
@@ -133,7 +133,10 @@ fn daemon(action: DaemonAction) -> Result<()> {
         }
         DaemonAction::Restart => {
             stop_daemon()?;
-            daemon(DaemonAction::Start { foreground: true })
+            daemon(DaemonAction::Start {
+                foreground: true,
+                detach: false,
+            })
         }
         DaemonAction::Status => status_daemon(),
     }
@@ -155,12 +158,88 @@ fn install_signal_handler(shutdown: std::sync::Arc<std::sync::atomic::AtomicBool
     });
 }
 
+#[allow(unsafe_code)]
 fn detach_via_double_fork() -> Result<()> {
-    // The caller (agentd daemon start, no --foreground) double-forks and
-    // execs the same binary in --foreground mode. This is invoked from
-    // `daemon start` in the CLI; for the foreground path we don't fork.
-    // Implementation is added in Task 16.
-    Err(anyhow::anyhow!("--detach not yet implemented (Task 16)"))
+    use std::os::unix::process::CommandExt;
+    // Double-fork: parent forks once, intermediate forks again and exits,
+    // grandchild execs `agentd daemon start --foreground` in a new session.
+    // Forking happens BEFORE any Tokio runtime is entered, so no other
+    // threads are mid-syscall and the fork is async-signal-safe.
+    let exe = std::env::current_exe()?;
+    let paths = agentd::paths::Paths::resolve();
+    let pid_path = paths.daemon_pid_path();
+    std::fs::create_dir_all(&paths.runtime_dir)?;
+
+    // SAFETY: between fork() and exec() only async-signal-safe code runs;
+    // the Tokio runtime is not yet started in this process, so no other
+    // threads are mid-syscall and the child's address space is consistent.
+    let intermediate = unsafe { libc::fork() };
+    if intermediate < 0 {
+        return Err(anyhow::anyhow!("fork failed"));
+    }
+    if intermediate == 0 {
+        // Intermediate child: fork once more, then exit so the grandchild
+        // is reparented to init and is no longer a zombie tied to the CLI
+        // session.
+        // SAFETY: same as above — no threads, async-signal-safe between
+        // fork and the immediate exit below.
+        let grand = unsafe { libc::fork() };
+        if grand < 0 {
+            std::process::exit(1);
+        }
+        if grand == 0 {
+            // Grandchild: become a session leader, detach stdio, write the
+            // PID file, then exec the same binary in --foreground mode.
+            // SAFETY: setsid() is safe to call in a forked child that is
+            // not a process group leader (true here — only the original
+            // parent was, and this process was just created by fork).
+            unsafe {
+                libc::setsid();
+            }
+            // Redirect stdio to /dev/null so the daemon does not hold a
+            // reference to the controlling terminal or the parent's pipes.
+            let devnull = std::ffi::CString::new("/dev/null").unwrap();
+            // SAFETY: between fork() and exec() only async-signal-safe
+            // code runs; libc::open, dup2, and close are all POSIX
+            // async-signal-safe. /dev/null is a valid constant path.
+            unsafe {
+                let fd = libc::open(devnull.as_ptr(), libc::O_RDWR);
+                if fd >= 0 {
+                    libc::dup2(fd, 0);
+                    libc::dup2(fd, 1);
+                    libc::dup2(fd, 2);
+                    if fd > 2 {
+                        libc::close(fd);
+                    }
+                }
+            }
+            // Write our PID. We are the long-running daemon (the upcoming
+            // exec preserves the PID), so this file lets `daemon stop`
+            // signal the right process.
+            let pid = std::process::id();
+            let _ = std::fs::write(&pid_path, pid.to_string());
+            // Exec the same binary in foreground mode. After exec, the
+            // new process re-runs the daemon's boot sequence and enters
+            // the Tokio runtime for the first time.
+            let err = std::process::Command::new(&exe)
+                .args(["daemon", "start", "--foreground"])
+                .exec();
+            // If exec returns, it failed.
+            eprintln!("agentd: exec failed: {err}");
+            std::process::exit(127);
+        }
+        // Intermediate: exit immediately, orphaning the grandchild to init.
+        std::process::exit(0);
+    }
+    // Parent: reap the intermediate child so we don't leak a zombie, then
+    // return so the CLI exits cleanly. The grandchild is owned by init.
+    // SAFETY: waitpid() is safe in the parent thread; we block until the
+    // intermediate child has exited (either normally or via signal).
+    unsafe {
+        let mut status = 0;
+        libc::waitpid(intermediate, &raw mut status, 0);
+    }
+    Ok(())
 }
 
 fn stop_daemon() -> Result<()> {
