@@ -109,7 +109,7 @@ fn session_dismiss_error_clears_errored_status() {
     let db = fresh_db();
     let id = insert(&db);
     SessionRepo::new(&db)
-        .update_status(&id, SessionStatus::Errored)
+        .update_status(&id, SessionStatus::Errored, chrono::Utc::now())
         .expect("e");
     let r = mutate::dispatch(
         Method::SESSION_DISMISS_ERROR,

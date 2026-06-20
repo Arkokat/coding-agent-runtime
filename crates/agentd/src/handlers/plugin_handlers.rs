@@ -2,7 +2,8 @@
     clippy::needless_pass_by_value,
     clippy::items_after_statements,
     clippy::enum_glob_use,
-    clippy::unnecessary_wraps
+    clippy::unnecessary_wraps,
+    clippy::map_unwrap_or
 )]
 
 use crate::db::Db;
@@ -116,7 +117,14 @@ fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginRes
         .and_then(Value::as_str)
         .ok_or(ProtocolError::InvalidParams)?;
     let payload = params.get("payload").cloned().unwrap_or(Value::Null);
-    let _ts = params.get("ts");
+    // Agent's `ts` is authoritative for `last_event_at` (spec section 9).
+    // Fall back to the daemon's clock if missing or unparseable.
+    let ts = params
+        .get("ts")
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .unwrap_or_else(chrono::Utc::now);
     let id = Uuid::parse_str(session_id_str).map_err(|_| ProtocolError::InvalidParams)?;
 
     let session = SessionRepo::new(db)
@@ -124,7 +132,7 @@ fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginRes
         .map_err(|_| ProtocolError::InternalError)?
         .ok_or(ProtocolError::SessionNotFound)?;
 
-    EventRepo::new(db)
+    let event_id = EventRepo::new(db)
         .insert(&id, kind, &payload)
         .map_err(|_| ProtocolError::InternalError)?;
 
@@ -142,13 +150,13 @@ fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginRes
                 _ => return Err(ProtocolError::InvalidParams),
             };
             SessionRepo::new(db)
-                .update_status(&id, new)
+                .update_status(&id, new, ts)
                 .map_err(|_| ProtocolError::InternalError)?;
         }
     } else if kind == "session.task_changed" {
         if let Some(task) = payload.get("task").and_then(Value::as_str) {
             SessionRepo::new(db)
-                .update_task(&id, Some(task))
+                .update_task(&id, Some(task), ts)
                 .map_err(|_| ProtocolError::InternalError)?;
         }
     } else if kind == "session.usage_updated" {
@@ -156,16 +164,19 @@ fn session_report_event(params: Value, db: &Db, _plugin_name: &str) -> PluginRes
         let total = payload.get("total").and_then(Value::as_u64);
         let cost = payload.get("cost_usd").and_then(Value::as_f64);
         SessionRepo::new(db)
-            .update_usage(&id, used, total, cost)
+            .update_usage(&id, used, total, cost, ts)
             .map_err(|_| ProtocolError::InternalError)?;
     } else if kind == "session.finished" {
         SessionRepo::new(db)
-            .mark_finished(&id)
+            .mark_finished(&id, ts)
             .map_err(|_| ProtocolError::InternalError)?;
     }
-    let _ = session; // ownership rule (-32004) is enforced in Task 22 (supervisor)
+    let _ = session; // ownership rule (-32004) is enforced once the supervisor is wired in Plan 3
 
-    Ok(json!({"accepted": true, "event_id": id.to_string()}))
+    Ok(json!({
+        "accepted": true,
+        "event_id": event_id.to_string(),
+    }))
 }
 
 fn plugin_heartbeat() -> PluginResult {

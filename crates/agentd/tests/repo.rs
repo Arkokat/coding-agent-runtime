@@ -72,7 +72,8 @@ fn session_list_non_finished_excludes_finished() {
     let mut b = sample_session();
     repo.insert(&a).expect("insert a");
     repo.insert(&b).expect("insert b");
-    repo.mark_finished(&b.id).expect("finish b");
+    repo.mark_finished(&b.id, chrono::Utc::now())
+        .expect("finish b");
     let active = repo.list_non_finished().expect("list");
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].id, a.id);
@@ -84,7 +85,7 @@ fn session_update_status_writes_last_event_at() {
     let repo = SessionRepo::new(&db);
     let s = sample_session();
     repo.insert(&s).expect("insert");
-    repo.update_status(&s.id, SessionStatus::Working)
+    repo.update_status(&s.id, SessionStatus::Working, chrono::Utc::now())
         .expect("update");
     let got = repo.get(&s.id).expect("get").expect("present");
     assert_eq!(got.status, SessionStatus::Working);
