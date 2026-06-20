@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used)]
 
 use agentd::ipc::framing;
+use agentd::plugin_heartbeat::HEARTBEAT_INTERVAL;
 use agentd::plugin_uds::bind_and_handshake;
 use agentd_testing::test_socket_path;
 use serde_json::json;
@@ -40,7 +41,10 @@ async fn bind_and_handshake_accepts_a_plugin_hello() {
     reader.read_line(&mut line).await.expect("read");
     let resp: serde_json::Value = serde_json::from_str(line.trim()).expect("parse");
     assert_eq!(resp["result"]["plugin_id"], "opencode");
-    assert_eq!(resp["result"]["heartbeat_interval_secs"], 5);
+    assert_eq!(
+        resp["result"]["heartbeat_interval_secs"],
+        HEARTBEAT_INTERVAL.as_secs()
+    );
 
     let hs = server.await.expect("join").expect("handshake ok");
     assert_eq!(hs.plugin_name, "opencode");

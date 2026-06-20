@@ -1,5 +1,6 @@
 use crate::db::Db;
 use crate::ipc::framing;
+use crate::plugin_heartbeat::HEARTBEAT_INTERVAL;
 use agentd_protocol::ProtocolError;
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
@@ -110,7 +111,7 @@ pub async fn bind_and_handshake(
         "result": {
             "ok": true,
             "plugin_id": name,
-            "heartbeat_interval_secs": 5,
+            "heartbeat_interval_secs": HEARTBEAT_INTERVAL.as_secs(),
         }
     });
     let mut buf: Vec<u8> = Vec::new();
