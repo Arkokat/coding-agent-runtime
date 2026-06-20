@@ -79,6 +79,7 @@ dependencies = [
 name = "agentd-testing"
 version = "0.1.0"
 dependencies = [
+ "agentd-protocol",
  "async-trait",
  "axum",
  "chrono",

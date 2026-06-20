@@ -2,6 +2,7 @@
 
 pub mod color;
 pub mod event_source;
+pub mod input;
 pub mod render;
 pub mod state;
 

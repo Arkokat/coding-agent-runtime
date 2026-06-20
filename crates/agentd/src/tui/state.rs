@@ -96,6 +96,9 @@ pub struct TuiState {
     pub new_modal: Option<NewModal>,
     /// Transient status line message and its expiry.
     pub status_message: Option<(String, Instant)>,
+    /// Path stashed by the new-session modal `Enter`; the event loop
+    /// picks it up and calls `session.create` on the daemon.
+    pub pending_create: Option<PathBuf>,
 }
 
 impl Default for TuiState {
@@ -119,6 +122,7 @@ impl TuiState {
             rename_modal: None,
             new_modal: None,
             status_message: None,
+            pending_create: None,
         }
     }
 

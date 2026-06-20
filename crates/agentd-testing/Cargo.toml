@@ -12,6 +12,7 @@ description = "Test harness, scripted test-agent fixture, and HTTP mock for agen
 workspace = true
 
 [dependencies]
+agentd-protocol = { path = "../agentd-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"
