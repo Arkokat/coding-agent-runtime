@@ -11,6 +11,8 @@ impl Method {
     pub const STATE_SNAPSHOT: &'static str = "state.snapshot";
     /// Get a single session by id.
     pub const SESSION_GET: &'static str = "session.get";
+    /// List all non-finished sessions (returns a JSON array of sessions).
+    pub const SESSION_LIST_ACTIVE: &'static str = "session.list_active";
     /// Get event log for a session.
     pub const SESSION_EVENTS: &'static str = "session.events";
     /// Get daemon status.

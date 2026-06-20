@@ -28,6 +28,16 @@ pub fn dispatch(method: &str, params: Value, db: &Db) -> Option<Value> {
             let s = SessionRepo::new(db).get(&id).ok()??;
             Some(serde_json::to_value(s).ok()?)
         }
+        Method::SESSION_LIST_ACTIVE => {
+            let sessions = SessionRepo::new(db)
+                .list_non_finished()
+                .ok()?
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            Some(Value::Array(sessions))
+        }
         Method::SESSION_EVENTS => {
             let id = params.get("id")?.as_str()?;
             let id = Uuid::parse_str(id).ok()?;
