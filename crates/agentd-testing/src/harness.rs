@@ -60,11 +60,8 @@ impl Harness {
 /// so the host sandbox can allow-list one specific path rather than
 /// `/tmp/*` globally.
 ///
-/// Default: `$HOME/.cache/agentd/test-uds/` (XDG cache convention).
-/// Stable across worktree moves — the user can pin the sandbox to
-/// `~/.cache/agentd/test-uds/` once and the path never changes. Override
-/// with the `AGENTD_TEST_RUNTIME_DIR` env var if you prefer a different
-/// location (e.g. `/tmp/agentd-test-uds/` for ephemeral test runs).
+/// Default: `/tmp/agentd/test-uds/`. Override with the
+/// `AGENTD_TEST_RUNTIME_DIR` env var if you prefer a different location.
 ///
 /// **Path length constraint**: UDS paths are capped at ~108 bytes (`SUN_LEN`).
 /// The default path is well under the limit; if you override, pick a path
@@ -72,22 +69,16 @@ impl Harness {
 ///
 /// The directory is auto-created if missing. Callers are responsible for
 /// cleaning up individual socket files; the directory itself persists
-/// across test runs.
+/// across test runs (but `/tmp` may be cleared on reboot).
 ///
 /// # Panics
 ///
-/// Panics if `$HOME` is not set, or if the runtime directory cannot be
-/// created.
+/// Panics if the runtime directory cannot be created.
 pub fn test_runtime_dir() -> PathBuf {
     let dir = if let Some(custom) = std::env::var_os("AGENTD_TEST_RUNTIME_DIR") {
         PathBuf::from(custom)
     } else {
-        let home = std::env::var_os("HOME")
-            .expect("HOME not set; set AGENTD_TEST_RUNTIME_DIR to override");
-        PathBuf::from(home)
-            .join(".cache")
-            .join("agentd")
-            .join("test-uds")
+        PathBuf::from("/tmp/agentd/test-uds")
     };
     std::fs::create_dir_all(&dir).expect("create test_runtime_dir");
     dir
