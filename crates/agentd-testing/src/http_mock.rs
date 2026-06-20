@@ -27,18 +27,29 @@ pub fn hash_body(bytes: &[u8]) -> String {
     format!("sha256:{digest:x}")
 }
 
-/// Counter for the per-call port assignment. Starts at 31415 and wraps
-/// within the 85-port sandbox-allowed range (31415..=31499).
-static NEXT_TEST_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(31415);
+/// Counter for the per-call port assignment. Per-process monotonic; mixed
+/// with the PID offset below so parallel `nextest` test processes (one
+/// per test binary) don't collide on the same starting port.
+static NEXT_TEST_PORT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Fixed TCP bind address used by `HttpMock::start` and the fixture tests.
 ///
-/// Pinned to a specific port (instead of `127.0.0.1:0` OS-pick) so the host's
-/// sandbox can allow-list one concrete port. Default starts at `127.0.0.1:31415`;
-/// each subsequent call returns the next port in the range
-/// `31415..=31499` so parallel tests in the same binary don't conflict on
-/// `AddrInUse`. Override with the `AGENTD_TEST_PORT` env var to pin to a
-/// single port (e.g. `AGENTD_TEST_PORT=18932 cargo test -p agentd-testing`).
+/// Pinned to a specific range (instead of `127.0.0.1:0` OS-pick) so the host's
+/// sandbox can allow-list one concrete range. Default is the 85-port window
+/// `127.0.0.1:31415..=31499`; each call returns the next port in that range.
+///
+/// Two mechanisms keep parallel tests from colliding on `AddrInUse`:
+///
+/// 1. **PID offset**: the counter is mixed with `process::id() % 85`, so
+///    different `nextest` test binaries (each in its own process) get
+///    different starting ports. `cargo test` (single process per binary,
+///    but many binaries) and `cargo nextest` both benefit.
+/// 2. **`HttpMock::start` retry**: if the picked port is in use (e.g. from
+///    a recently-dropped listener in `TIME_WAIT`), `start` tries up to 10
+///    more ports from the counter before returning an error.
+///
+/// Override with the `AGENTD_TEST_PORT` env var to pin to a single port
+/// (e.g. `AGENTD_TEST_PORT=18932 cargo test -p agentd-testing`).
 ///
 /// The host sandbox must allow the range — pin `127.0.0.1:31415-31499`
 /// (or a narrower range if you know your test count).
@@ -49,9 +60,9 @@ pub fn test_bind_addr() -> String {
             return format!("127.0.0.1:{port}");
         }
     }
-    let port = NEXT_TEST_PORT.fetch_add(1, Ordering::SeqCst);
-    // Wrap around to stay within the sandbox-allowed range
-    let port = 31415 + (port - 31415) % 85; // 31415..=31499
+    let pid_offset = (std::process::id() as u32) % 85;
+    let n = NEXT_TEST_PORT.fetch_add(1, Ordering::SeqCst);
+    let port = 31415 + (pid_offset + n) % 85;
     format!("127.0.0.1:{port}")
 }
 
@@ -106,11 +117,39 @@ impl HttpMock {
     }
 
     /// Start the mock server. Returns the base URL and a handle for shutdown.
+    ///
+    /// Retries on `AddrInUse` up to 10 times, calling `test_bind_addr` again
+    /// each time. The PID-offset counter (see `test_bind_addr`) means a
+    /// retry virtually always finds a free port; this is belt-and-braces
+    /// for the rare case where a recently-dropped listener is still in
+    /// `TIME_WAIT` on the same port.
     pub async fn start(self) -> std::io::Result<Handle> {
         let app = Router::new().fallback(any(handler)).with_state(self);
 
-        let listener = TcpListener::bind(test_bind_addr()).await?;
-        let addr = listener.local_addr()?;
+        let (listener, addr) = {
+            let mut last_err: Option<std::io::Error> = None;
+            let mut bound: Option<(tokio::net::TcpListener, std::net::SocketAddr)> = None;
+            for _ in 0..10 {
+                match TcpListener::bind(test_bind_addr()).await {
+                    Ok(l) => match l.local_addr() {
+                        Ok(a) => {
+                            bound = Some((l, a));
+                            break;
+                        }
+                        Err(e) => return Err(e),
+                    },
+                    Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                        last_err = Some(e);
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            bound.ok_or_else(|| {
+                last_err.unwrap_or_else(|| {
+                    std::io::Error::other("test_bind_addr: exhausted 10 retries on AddrInUse")
+                })
+            })?
+        };
 
         let (tx, rx) = oneshot::channel();
         let join = tokio::spawn(async move {
@@ -179,4 +218,37 @@ fn build_response(resp: &Response) -> AxumResponse {
         .header(axum::http::header::CONTENT_TYPE, resp.content_type.clone())
         .body(Body::from(resp.body.clone()))
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "build error").into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every call to `test_bind_addr` must return a port in the
+    /// sandbox-allowed range, regardless of how many times it's been
+    /// called (counter wraps modulo 85).
+    #[test]
+    fn test_bind_addr_stays_in_sandbox_range() {
+        for _ in 0..500 {
+            let addr = test_bind_addr();
+            let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+            assert!(
+                (31415..=31499).contains(&port),
+                "port {port} out of sandbox range (addr: {addr})"
+            );
+        }
+    }
+
+    /// Two consecutive `test_bind_addr` calls must return different ports.
+    /// With the PID-offset counter, each `fetch_add(1)` advances the cycle
+    /// by one, so the next call always lands on the next port in the cycle.
+    #[test]
+    fn test_bind_addr_consecutive_calls_differ() {
+        let prev = test_bind_addr();
+        let curr = test_bind_addr();
+        assert_ne!(
+            prev, curr,
+            "consecutive calls returned the same port {prev}"
+        );
+    }
 }
