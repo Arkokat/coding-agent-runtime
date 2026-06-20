@@ -3,6 +3,7 @@
 use agentd::db::Db;
 use agentd::db::repo::SessionRepo;
 use agentd::handlers::mutate;
+use agentd::tmux::MockTmux;
 use agentd_protocol::{Method, SessionSource, SessionStatus};
 use uuid::Uuid;
 
@@ -41,6 +42,7 @@ fn insert(db: &Db) -> Uuid {
 fn session_create_inserts_new_row() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let r = mutate::dispatch(
         Method::SESSION_CREATE,
         serde_json::json!({
@@ -49,6 +51,7 @@ fn session_create_inserts_new_row() {
             "name": "q",
         }),
         &db,
+        &tmux,
     );
     let v = r.into_value().expect("ok");
     assert_eq!(v["working_dir"], "/tmp/q");
@@ -62,10 +65,12 @@ fn session_create_inserts_new_row() {
 fn session_create_rejects_unknown_agent_type() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let r = mutate::dispatch(
         Method::SESSION_CREATE,
         serde_json::json!({"agent_type": "mystery", "working_dir": "/tmp/x"}),
         &db,
+        &tmux,
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32602);
@@ -75,11 +80,13 @@ fn session_create_rejects_unknown_agent_type() {
 fn session_rename_updates_display_name() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let id = insert(&db);
     let r = mutate::dispatch(
         Method::SESSION_RENAME,
         serde_json::json!({"id": id.to_string(), "name": "renamed"}),
         &db,
+        &tmux,
     );
     let v = r.into_value().expect("ok");
     assert_eq!(v["display_name"], "renamed");
@@ -94,10 +101,12 @@ fn session_rename_updates_display_name() {
 fn session_rename_missing_returns_session_not_found() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let r = mutate::dispatch(
         Method::SESSION_RENAME,
         serde_json::json!({"id": Uuid::now_v7().to_string(), "name": "x"}),
         &db,
+        &tmux,
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32001);
@@ -107,6 +116,7 @@ fn session_rename_missing_returns_session_not_found() {
 fn session_dismiss_error_clears_errored_status() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let id = insert(&db);
     SessionRepo::new(&db)
         .update_status(&id, SessionStatus::Errored, chrono::Utc::now())
@@ -115,6 +125,7 @@ fn session_dismiss_error_clears_errored_status() {
         Method::SESSION_DISMISS_ERROR,
         serde_json::json!({"id": id.to_string()}),
         &db,
+        &tmux,
     );
     let v = r.into_value().expect("ok");
     assert_eq!(v["status"], "idle");
@@ -124,11 +135,13 @@ fn session_dismiss_error_clears_errored_status() {
 fn session_dismiss_error_only_works_on_errored() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let id = insert(&db);
     let r = mutate::dispatch(
         Method::SESSION_DISMISS_ERROR,
         serde_json::json!({"id": id.to_string()}),
         &db,
+        &tmux,
     );
     let err = r.into_err().expect("err");
     assert_eq!(err.code(), -32602, "must reject non-errored status");
@@ -138,11 +151,13 @@ fn session_dismiss_error_only_works_on_errored() {
 fn session_jump_and_kill_are_placeholders() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
+    let tmux = MockTmux::new();
     let id = insert(&db);
     let r1 = mutate::dispatch(
         Method::SESSION_JUMP,
         serde_json::json!({"id": id.to_string()}),
         &db,
+        &tmux,
     );
     assert!(r1.into_err().is_some(), "jump needs Tmux (Task 19)");
 
@@ -150,6 +165,7 @@ fn session_jump_and_kill_are_placeholders() {
         Method::SESSION_KILL,
         serde_json::json!({"id": id.to_string()}),
         &db,
+        &tmux,
     );
     assert!(r2.into_err().is_some(), "kill needs Tmux (Task 19)");
 }
@@ -158,7 +174,8 @@ fn session_jump_and_kill_are_placeholders() {
 fn daemon_shutdown_sets_flag() {
     mutate::reset_shutdown_for_tests();
     let db = fresh_db();
-    let r = mutate::dispatch(Method::DAEMON_SHUTDOWN, serde_json::json!({}), &db);
+    let tmux = MockTmux::new();
+    let r = mutate::dispatch(Method::DAEMON_SHUTDOWN, serde_json::json!({}), &db, &tmux);
     let v = r.into_value().expect("ok");
     assert_eq!(v["ok"], true);
     assert!(mutate::shutdown_requested());

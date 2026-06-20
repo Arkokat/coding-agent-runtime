@@ -7,6 +7,7 @@
 
 use crate::db::Db;
 use crate::db::repo::SessionRepo;
+use crate::tmux::Tmux;
 use agentd_protocol::{AgentType, Method, ProtocolError, Session, SessionSource, SessionStatus};
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicBool;
@@ -49,19 +50,19 @@ impl MutateResult {
 
 /// Dispatch a mutating JSON-RPC method. Returns `MutateResult::Err(MethodNotFound)`
 /// for methods that are not mutations (router should try the read dispatcher).
-pub fn dispatch(method: &str, params: Value, db: &Db) -> MutateResult {
+///
+/// `tmux` is threaded through so future handlers (`session.jump`,
+/// `session.kill`) can call `switch_client` / `kill_session`. It is unused
+/// for the DB-only handlers; the placeholder jump/kill arm suppresses the
+/// unused-argument lint via a one-element tuple.
+pub fn dispatch(method: &str, params: Value, db: &Db, tmux: &dyn Tmux) -> MutateResult {
     match method {
         Method::SESSION_CREATE => session_create(params, db),
         Method::SESSION_RENAME => session_rename(params, db),
         Method::SESSION_DISMISS_ERROR => session_dismiss_error(params, db),
         Method::SESSION_JUMP | Method::SESSION_KILL => {
-            // Deferred to Plan 3 (assembled daemon runtime). The `Tmux`
-            // trait exists in `crate::tmux`, but the dispatcher signature
-            // does not thread it through yet, and the `daemon` command is
-            // still a stub. When Plan 3 wires the daemon boot sequence
-            // (§4 of the design spec), these handlers will be implemented
-            // here: jump -> `tmux.switch_client(name)`, kill ->
-            // `tmux.kill_session(name)` + `mark_finished`.
+            // Real impl in Task 11.
+            let _ = (tmux,);
             MutateResult::Err(ProtocolError::InternalError)
         }
         Method::DAEMON_SHUTDOWN => {
