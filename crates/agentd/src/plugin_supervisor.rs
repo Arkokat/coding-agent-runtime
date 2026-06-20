@@ -59,6 +59,13 @@ impl PluginSupervisor {
         *self.spawner.lock() = Some(spawner);
     }
 
+    /// Mutator. Set the resolved `Paths` so `ensure_plugin` can compute
+    /// the per-plugin UDS path. Normally set by `autostart`; tests that
+    /// exercise `ensure_plugin` directly call this explicitly.
+    pub fn set_paths(&mut self, paths: Paths) {
+        *self.paths.lock() = Some(paths);
+    }
+
     /// Snapshot of the heartbeat map for tests.
     pub fn heartbeats_snapshot(&self) -> HashMap<String, Arc<PluginHeartbeat>> {
         self.heartbeats.lock().clone()
@@ -165,6 +172,44 @@ impl PluginSupervisor {
     /// Forward a bus subscription request to the inner bus.
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Event> {
         self.bus.subscribe()
+    }
+
+    /// Ensure a plugin is running. Returns `Ok(true)` if it was just
+    /// spawned, `Ok(false)` if it was already running (or cannot be
+    /// spawned because manifest / paths / spawner are missing).
+    pub async fn ensure_plugin(
+        &self,
+        name: &str,
+    ) -> Result<bool, crate::plugin_spawner::SpawnError> {
+        {
+            let handles = self.handles.lock().await;
+            if handles.contains_key(name) {
+                return Ok(false);
+            }
+        }
+        let spawner = self.spawner.lock().clone();
+        let Some(spawner) = spawner else {
+            return Ok(false);
+        };
+        let entry = self
+            .manifest
+            .plugins
+            .iter()
+            .find(|p| p.name == name)
+            .cloned();
+        let Some(entry) = entry else {
+            return Ok(false);
+        };
+        let paths = self.paths.lock().clone();
+        let Some(paths) = paths else {
+            return Ok(false);
+        };
+        let socket = paths.plugin_socket_path(&entry.name);
+        let binary = Path::new(&entry.binary);
+        let handle = spawner.spawn(name, binary, &socket).await?;
+        self.connected.lock().await.push(name.to_string());
+        self.handles.lock().await.insert(name.to_string(), handle);
+        Ok(true)
     }
 
     /// Access the inner event bus (for tests + emit paths).

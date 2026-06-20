@@ -28,6 +28,9 @@ pub enum DaemonError {
     /// Plugin supervisor failure.
     #[error("supervisor: {0}")]
     Supervisor(#[from] crate::plugin_supervisor::SupervisorError),
+    /// Plugin spawn failure.
+    #[error("spawn: {0}")]
+    Spawn(#[from] crate::plugin_spawner::SpawnError),
     /// Control UDS bind/serve failure.
     #[error("control: {0}")]
     Control(#[from] crate::ipc::control::ControlError),
@@ -154,7 +157,10 @@ impl Daemon {
         crate::db::migrations::run(&self.db)?;
         // Step 4: tombstone GC.
         tombstone_gc(&self.db)?;
-        // Step 5: restart-respawn (Task 14 wires this; no-op for now).
+        // Step 5: restart-respawn. Stash paths on the supervisor first so
+        // `ensure_plugin` can resolve per-plugin UDS paths.
+        self.supervisor.set_paths(self.paths.clone());
+        let _spawned = restart_respawn(&self.db, &self.supervisor).await?;
         // Step 6: bind control UDS.
         let control = ControlServer::bind(&self.paths.control_socket_path)?;
         let control_handle = tokio::spawn(async move {
@@ -210,6 +216,34 @@ pub fn tombstone_gc(db: &crate::db::Db) -> Result<usize, DaemonError> {
         .map_err(crate::db::repo::RepoError::from)
         .map_err(DaemonError::Db)?;
     Ok(n)
+}
+
+/// For every non-finished session, look up `metadata["plugin"]` and
+/// ensure the owning plugin is connected. Returns the number of
+/// plugins spawned. The plugin's own scan loop will pick up the
+/// session naturally; no synthetic RPC is sent.
+pub async fn restart_respawn(db: &Db, supervisor: &PluginSupervisor) -> Result<usize, DaemonError> {
+    use crate::db::repo::SessionRepo;
+    use agentd_protocol::SessionStatus;
+    let active = SessionRepo::new(db)
+        .list_non_finished()
+        .map_err(DaemonError::Db)?;
+    let mut needed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in active {
+        if s.status == SessionStatus::Finished {
+            continue;
+        }
+        if let Some(p) = s.metadata.get("plugin").and_then(serde_json::Value::as_str) {
+            needed.insert(p.to_string());
+        }
+    }
+    let mut spawned = 0;
+    for name in needed {
+        if supervisor.ensure_plugin(&name).await? {
+            spawned += 1;
+        }
+    }
+    Ok(spawned)
 }
 
 /// Ensure a daemon is running and return a connected `ControlClient`.

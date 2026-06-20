@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use agentd::daemon::{Daemon, DaemonError, acquire_flock, tombstone_gc};
+use agentd::daemon::{Daemon, DaemonError, acquire_flock, restart_respawn, tombstone_gc};
 use agentd::db::Db;
 use agentd::db::repo::SessionRepo;
 use agentd::event_bus::EventBus;
 use agentd::paths::Paths;
 use agentd::plugin_spawner::{MockPluginSpawner, PluginSpawner};
+use agentd::plugin_supervisor::PluginSupervisor;
 use agentd::plugins_manifest::PluginsManifest;
 use agentd::tmux::MockTmux;
 use agentd_protocol::{AgentType, Session, SessionSource, SessionStatus};
@@ -185,4 +186,47 @@ autostart = true
     let r = local.run_until(daemon_handle).await.expect("join");
     r.expect("daemon run ok");
     assert!(!calls.lock().is_empty(), "plugin should have been spawned");
+}
+
+#[tokio::test]
+async fn restart_respawn_spawns_plugins_for_non_finished_sessions() {
+    let paths = fresh_paths("restart");
+    let db = Db::open(&paths.state_db_path).expect("open");
+    agentd::db::migrations::run(&db).expect("migrate");
+
+    // Insert a non-finished session with `metadata.plugin = "opencode"`.
+    let id = uuid::Uuid::now_v7();
+    db.conn()
+        .execute(
+            "INSERT INTO sessions (id, agent_type, working_dir, display_name, status, source, created_at, metadata)
+             VALUES (?1, 'opencode', '/tmp/x', 'x', 'starting', 'cli', ?2, ?3)",
+            rusqlite::params![
+                id.to_string(),
+                chrono::Utc::now().to_rfc3339(),
+                serde_json::json!({"plugin": "opencode"}).to_string()
+            ],
+        )
+        .expect("insert");
+
+    let toml = r#"
+[[plugins]]
+name = "opencode"
+binary = "/usr/bin/true"
+autostart = false
+"#;
+    let manifest: PluginsManifest = toml::from_str(toml).expect("parse");
+    let bus = EventBus::default();
+    let mut sup = PluginSupervisor::new(bus, &db, manifest);
+    let calls: Arc<parking_lot::Mutex<Vec<(String, PathBuf, PathBuf)>>> =
+        Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
+    sup.set_spawner(spawner);
+    sup.set_paths(paths.clone());
+
+    let n = restart_respawn(&db, &sup).await.expect("restart");
+    assert_eq!(n, 1, "opencode should have been spawned once");
+
+    let recorded = calls.lock().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "opencode");
 }
