@@ -14,6 +14,7 @@ pub mod event_bus;
 pub mod handlers;
 pub mod ipc;
 pub mod paths;
+pub mod plugin_spawner;
 pub mod plugin_supervisor;
 pub mod plugins_manifest;
 pub mod session_create;
