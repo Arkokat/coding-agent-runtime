@@ -1,12 +1,15 @@
 use crate::control_client::ControlClient;
 use crate::db::Db;
 use crate::event_bus::EventBus;
+use crate::ipc::control::ControlServer;
 use crate::paths::Paths;
+use crate::plugin_supervisor::PluginSupervisor;
 use crate::plugins_manifest::PluginsManifest;
 use crate::tmux::Tmux;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -19,6 +22,15 @@ pub enum DaemonError {
     /// `SQLite` repository failure.
     #[error("db: {0}")]
     Db(#[from] crate::db::repo::RepoError),
+    /// Migration application failure.
+    #[error("migrations: {0}")]
+    Migrations(#[from] crate::db::migrations::MigrationError),
+    /// Plugin supervisor failure.
+    #[error("supervisor: {0}")]
+    Supervisor(#[from] crate::plugin_supervisor::SupervisorError),
+    /// Control UDS bind/serve failure.
+    #[error("control: {0}")]
+    Control(#[from] crate::ipc::control::ControlError),
     /// Another agentd daemon already holds the runtime lock.
     #[error("another agentd daemon is already running (lock held)")]
     LockHeld,
@@ -91,8 +103,8 @@ pub struct Daemon {
     pub bus: EventBus,
     /// Tmux backend (`RealTmux` in production, `MockTmux` in tests).
     pub tmux: Box<dyn Tmux>,
-    /// Plugin manifest loaded at startup.
-    pub manifest: PluginsManifest,
+    /// Plugin supervisor (manifest + spawner + connection state).
+    pub supervisor: PluginSupervisor,
     /// Flag set by external callers (CLI, signal handler) to ask the
     /// daemon to shut down.
     pub shutdown: Arc<AtomicBool>,
@@ -107,12 +119,13 @@ impl Daemon {
         tmux: Box<dyn Tmux>,
         manifest: PluginsManifest,
     ) -> Self {
+        let supervisor = PluginSupervisor::new(bus.clone(), &db, manifest);
         Self {
             paths,
             db,
             bus,
             tmux,
-            manifest,
+            supervisor,
             shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -121,6 +134,48 @@ impl Daemon {
     /// need to ask the daemon to shut down.
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.shutdown)
+    }
+
+    /// Boot the daemon through steps 1-7 of the boot sequence, then
+    /// idle on the event bus until [`shutdown_handle`](Self::shutdown_handle)
+    /// is set. On shutdown, abort the control UDS task and tear down the
+    /// plugin supervisor.
+    #[allow(unused_mut)]
+    pub async fn run(mut self) -> Result<(), DaemonError> {
+        // Step 1: flock.
+        let _flock = acquire_flock(&self.paths.daemon_lock_path)?;
+        // Step 2: mkdir 0700.
+        std::fs::create_dir_all(&self.paths.runtime_dir)?;
+        std::fs::set_permissions(
+            &self.paths.runtime_dir,
+            std::fs::Permissions::from_mode(0o700),
+        )?;
+        // Step 3: migrations (already done by caller, but be safe).
+        crate::db::migrations::run(&self.db)?;
+        // Step 4: tombstone GC.
+        tombstone_gc(&self.db)?;
+        // Step 5: restart-respawn (Task 14 wires this; no-op for now).
+        // Step 6: bind control UDS.
+        let control = ControlServer::bind(&self.paths.control_socket_path)?;
+        let control_handle = tokio::spawn(async move {
+            control.serve(|_| {}).await;
+        });
+        // Step 7: autostart plugins.
+        self.supervisor.autostart(&self.paths).await?;
+        // Idle: subscribe to bus + sleep until shutdown.
+        let mut rx = self.bus.subscribe();
+        loop {
+            if self.shutdown.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::select! {
+                _ = rx.recv() => {},
+                () = tokio::time::sleep(std::time::Duration::from_millis(200)) => {},
+            }
+        }
+        control_handle.abort();
+        self.supervisor.shutdown().await;
+        Ok(())
     }
 }
 

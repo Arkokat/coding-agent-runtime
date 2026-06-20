@@ -1,14 +1,20 @@
 #![allow(clippy::expect_used)]
 
+use std::sync::Arc;
+
 use agentd::daemon::{Daemon, DaemonError, acquire_flock, tombstone_gc};
 use agentd::db::Db;
 use agentd::db::repo::SessionRepo;
 use agentd::event_bus::EventBus;
 use agentd::paths::Paths;
+use agentd::plugin_spawner::{MockPluginSpawner, PluginSpawner};
+use agentd::plugins_manifest::PluginsManifest;
 use agentd::tmux::MockTmux;
 use agentd_protocol::{AgentType, Session, SessionSource, SessionStatus};
 use agentd_testing::test_runtime_dir;
 use chrono::{Duration, Utc};
+use parking_lot::Mutex;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 #[allow(unsafe_code)]
@@ -128,4 +134,55 @@ fn tombstone_gc_no_op_when_nothing_old() {
     let _ = insert_finished(&db, 1);
     let deleted = tombstone_gc(&db).expect("gc");
     assert_eq!(deleted, 0);
+}
+
+#[ignore = "needs AF_UNIX support (some local sandboxes block bind)"]
+#[tokio::test]
+async fn daemon_run_executes_boot_sequence_and_binds_control_uds() {
+    let paths = fresh_paths("boot-bind");
+    let db = Db::open(&paths.state_db_path).expect("open");
+    agentd::db::migrations::run(&db).expect("migrate");
+    let bus = EventBus::default();
+    let toml = r#"
+[[plugins]]
+name = "opencode"
+binary = "/bin/true"
+autostart = true
+"#;
+    let manifest: PluginsManifest = toml::from_str(toml).expect("parse manifest");
+    let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
+
+    // Construct a daemon that has the spawner wired through the supervisor.
+    let mut d = Daemon::new(paths.clone(), db, bus, Box::new(MockTmux::new()), manifest);
+    d.supervisor.set_spawner(spawner);
+    let shutdown = d.shutdown_handle();
+    let socket_path = paths.control_socket_path.clone();
+
+    // The daemon holds !Send state (rusqlite::Connection is !Sync, so
+    // `PluginSupervisor` is !Sync, so `&self.supervisor` is !Send). Use a
+    // LocalSet so the daemon can run concurrently with this test's polling
+    // task without needing a Send future.
+    let local = tokio::task::LocalSet::new();
+    let daemon_handle = local.spawn_local(d.run());
+
+    // Poll for the control UDS to appear, yielding to the daemon task
+    // between checks via the LocalSet.
+    let bound = local
+        .run_until(async {
+            for _ in 0..40 {
+                if socket_path.exists() {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            false
+        })
+        .await;
+    assert!(bound, "control UDS should be bound");
+
+    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+    let r = local.run_until(daemon_handle).await.expect("join");
+    r.expect("daemon run ok");
+    assert!(!calls.lock().is_empty(), "plugin should have been spawned");
 }

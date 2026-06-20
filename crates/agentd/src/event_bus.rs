@@ -25,6 +25,7 @@ pub struct Event {
 /// `RecvError::Lagged` is returned. Set this high enough that a slow
 /// subscriber can't fall behind, but low enough that memory doesn't
 /// grow unbounded. 1024 is the v1 default.
+#[derive(Clone)]
 pub struct EventBus {
     sender: broadcast::Sender<Event>,
     _capacity: usize,
