@@ -146,7 +146,11 @@ fn run_subscribe(
     loop {
         match read_line_nonblocking(stream) {
             ReadLine::Eof => break,
-            ReadLine::WouldBlock | ReadLine::Error => {}
+            ReadLine::WouldBlock => {}
+            ReadLine::Error => {
+                tracing::warn!("subscribe: client stream read error; closing");
+                break;
+            }
             ReadLine::Line(line) => {
                 if is_unsubscribe_frame(&line) {
                     break;
@@ -272,7 +276,13 @@ fn json_rpc_error(id: &Value, err: ProtocolError) -> Value {
 /// caller logs and drops the connection).
 fn read_request<R: BufRead>(reader: &mut R) -> Option<Value> {
     let mut line = String::new();
-    let n = match reader.read_line(&mut line) {
+    // Bound the read to MAX_LINE_BYTES + 1: a client that sends a
+    // multi-gigabyte line with no newline would otherwise make `line`
+    // grow unbounded before the post-read check fired. Reading one
+    // byte past the cap is enough to distinguish "exactly at the
+    // limit" from "over the limit".
+    let mut limited = BufReader::new(reader.take((crate::ipc::framing::MAX_LINE_BYTES as u64) + 1));
+    let n = match limited.read_line(&mut line) {
         Ok(0) => return None,
         Ok(n) => n,
         Err(e) => {
@@ -280,13 +290,12 @@ fn read_request<R: BufRead>(reader: &mut R) -> Option<Value> {
             return None;
         }
     };
-    let _ = n;
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    if n > crate::ipc::framing::MAX_LINE_BYTES {
+        tracing::warn!(bytes = n, "control router: line too long");
         return None;
     }
-    if line.len() > crate::ipc::framing::MAX_LINE_BYTES {
-        tracing::warn!(bytes = line.len(), "control router: line too long");
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
         return None;
     }
     match serde_json::from_str::<Value>(trimmed) {

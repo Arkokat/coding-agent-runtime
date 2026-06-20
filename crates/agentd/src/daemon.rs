@@ -173,8 +173,14 @@ impl Daemon {
         let mut bus_rx = self.bus.subscribe();
         let registry_for_task = Arc::clone(&registry);
         tokio::spawn(async move {
-            while let Ok(event) = bus_rx.recv().await {
-                registry_for_task.broadcast(&event);
+            loop {
+                match bus_rx.recv().await {
+                    Ok(event) => registry_for_task.broadcast(&event),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "bus forwarder lagged; continuing");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
         let control = ControlServer::bind(&self.paths.control_socket_path)?;
