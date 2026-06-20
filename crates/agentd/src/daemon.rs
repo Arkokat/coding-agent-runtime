@@ -175,6 +175,12 @@ impl Daemon {
         }
         control_handle.abort();
         self.supervisor.shutdown().await;
+        // Tear down runtime artifacts so a re-bind on next start does not
+        // race with a stale socket. Best-effort: ignore errors (file may
+        // already be gone if the OS cleaned it up).
+        let _ = std::fs::remove_file(&self.paths.control_socket_path);
+        let _ = std::fs::remove_file(&self.paths.daemon_lock_path);
+        let _ = std::fs::remove_file(self.paths.daemon_pid_path());
         Ok(())
     }
 }

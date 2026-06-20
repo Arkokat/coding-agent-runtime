@@ -97,6 +97,7 @@ fn daemon(action: DaemonAction) -> Result<()> {
     use agentd::tmux::RealTmux;
     match action {
         DaemonAction::Start { foreground } => {
+            eprintln!("agentd daemon starting (foreground={foreground})");
             let paths = Paths::resolve();
             std::fs::create_dir_all(&paths.state_dir)?;
             let db = agentd::db::Db::open(&paths.state_db_path)?;

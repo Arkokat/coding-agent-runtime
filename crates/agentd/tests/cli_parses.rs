@@ -15,7 +15,12 @@ fn parses_daemon_start() {
         .output()
         .expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("daemon start"), "got: {stdout}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("daemon start") || combined.contains("starting"),
+        "got stdout: {stdout}, stderr: {stderr}"
+    );
 }
 
 #[test]

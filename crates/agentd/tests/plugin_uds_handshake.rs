@@ -23,6 +23,15 @@ async fn bind_and_handshake_accepts_a_plugin_hello() {
         async move { bind_and_handshake(&sock, Duration::from_secs(2)).await }
     });
 
+    // Wait for the server to bind (the socket file must exist) before
+    // connecting, otherwise the client races the listener with `ENOENT`.
+    for _ in 0..50 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
     // Simulate a plugin client: connect, send plugin.hello, read response.
     let stream = tokio::net::UnixStream::connect(&sock)
         .await
