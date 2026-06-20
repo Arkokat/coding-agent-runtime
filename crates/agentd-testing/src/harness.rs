@@ -53,20 +53,22 @@ impl Harness {
     }
 }
 
-/// Project-local directory for UDS sockets in tests.
+/// Project-stable directory for UDS sockets in tests.
 ///
 /// Tests that bind Unix domain sockets (e.g. `ControlServer::bind`) should
 /// put their sockets under this directory instead of `std::env::temp_dir()`
 /// so the host sandbox can allow-list one specific path rather than
 /// `/tmp/*` globally.
 ///
-/// Default: `<worktree>/tmp/uds/`. Override with the `AGENTD_TEST_RUNTIME_DIR`
-/// env var if that path is blocked or you prefer a different location.
+/// Default: `$HOME/.cache/agentd/test-uds/` (XDG cache convention).
+/// Stable across worktree moves — the user can pin the sandbox to
+/// `~/.cache/agentd/test-uds/` once and the path never changes. Override
+/// with the `AGENTD_TEST_RUNTIME_DIR` env var if you prefer a different
+/// location (e.g. `/tmp/agentd-test-uds/` for ephemeral test runs).
 ///
 /// **Path length constraint**: UDS paths are capped at ~108 bytes (`SUN_LEN`).
-/// Our worktree path is already long, so the default path is kept as
-/// short as possible. If you override, pick a path whose absolute length
-/// fits within the limit.
+/// The default path is well under the limit; if you override, pick a path
+/// whose absolute length fits.
 ///
 /// The directory is auto-created if missing. Callers are responsible for
 /// cleaning up individual socket files; the directory itself persists
@@ -74,40 +76,21 @@ impl Harness {
 ///
 /// # Panics
 ///
-/// Panics if the workspace root cannot be located by walking up from the
-/// current directory looking for `xtask/Cargo.toml`, or if the runtime
-/// directory cannot be created.
+/// Panics if `$HOME` is not set, or if the runtime directory cannot be
+/// created.
 pub fn test_runtime_dir() -> PathBuf {
-    let dir = match std::env::var_os("AGENTD_TEST_RUNTIME_DIR") {
-        Some(custom) => PathBuf::from(custom),
-        None => find_workspace_root()
-            .expect(
-                "could not find workspace root (no xtask/Cargo.toml found walking up from CWD); \
-                 set AGENTD_TEST_RUNTIME_DIR to a short UDS-friendly path",
-            )
-            .join("tmp")
-            .join("uds"),
+    let dir = if let Some(custom) = std::env::var_os("AGENTD_TEST_RUNTIME_DIR") {
+        PathBuf::from(custom)
+    } else {
+        let home = std::env::var_os("HOME")
+            .expect("HOME not set; set AGENTD_TEST_RUNTIME_DIR to override");
+        PathBuf::from(home)
+            .join(".cache")
+            .join("agentd")
+            .join("test-uds")
     };
     std::fs::create_dir_all(&dir).expect("create test_runtime_dir");
     dir
-}
-
-/// Walk up from CWD looking for the workspace root (the directory
-/// containing `xtask/Cargo.toml`).
-///
-/// `cargo test` runs from each package's directory, not the worktree
-/// root, so a simple `current_dir()` would point at `crates/agentd/`,
-/// making the default `tmp/uds` path exceed the UDS `SUN_LEN` limit.
-fn find_workspace_root() -> Option<PathBuf> {
-    let mut current = std::env::current_dir().ok()?;
-    loop {
-        if current.join("xtask").join("Cargo.toml").is_file() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
 }
 
 /// Return a unique socket path under `test_runtime_dir()` for use in a
