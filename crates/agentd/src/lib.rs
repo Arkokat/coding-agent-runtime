@@ -17,6 +17,7 @@ pub mod paths;
 pub mod plugin_heartbeat;
 pub mod plugin_spawner;
 pub mod plugin_supervisor;
+pub mod plugin_uds;
 pub mod plugins_manifest;
 pub mod session_create;
 pub mod state;
