@@ -17,6 +17,7 @@ pub enum ControlClientError {
 }
 
 /// Minimal JSON-RPC client over a control UDS. One connection per call.
+#[derive(Debug)]
 pub struct ControlClient {
     path: std::path::PathBuf,
 }

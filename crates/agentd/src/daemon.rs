@@ -1,3 +1,4 @@
+use crate::control_client::ControlClient;
 use crate::db::Db;
 use crate::event_bus::EventBus;
 use crate::paths::Paths;
@@ -6,6 +7,7 @@ use crate::tmux::Tmux;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use thiserror::Error;
 
 /// Errors that can occur while constructing or running the daemon.
@@ -147,4 +149,55 @@ pub fn tombstone_gc(db: &crate::db::Db) -> Result<usize, DaemonError> {
         .map_err(crate::db::repo::RepoError::from)
         .map_err(DaemonError::Db)?;
     Ok(n)
+}
+
+/// Ensure a daemon is running and return a connected `ControlClient`.
+///
+/// 1. Try to connect to the control UDS with a 100ms timeout.
+/// 2. On failure, fork the current binary as `agentd daemon start --detach`
+///    (the detached daemon will bind the UDS itself).
+/// 3. Poll the UDS every 50ms for up to 2s.
+/// 4. Return a `ControlClient` ready to call.
+pub async fn ensure_daemon_running(paths: &Paths) -> Result<ControlClient, DaemonError> {
+    // Step 1: try connect.
+    if let Ok(client) = tokio::time::timeout(
+        Duration::from_millis(100),
+        ControlClient::connect(&paths.control_socket_path),
+    )
+    .await
+    .map_err(|_| {
+        DaemonError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "connect timeout",
+        ))
+    })? {
+        return Ok(client);
+    }
+
+    // Step 2: fork detached.
+    let exe = std::env::current_exe().map_err(DaemonError::Io)?;
+    let status = std::process::Command::new(exe)
+        .args(["daemon", "start", "--detach"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(DaemonError::Io)?;
+    if !status.success() {
+        return Err(DaemonError::Io(std::io::Error::other(format!(
+            "daemon start --detach exited {status:?}"
+        ))));
+    }
+
+    // Step 3: poll.
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Ok(client) = ControlClient::connect(&paths.control_socket_path).await {
+            return Ok(client);
+        }
+    }
+    Err(DaemonError::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "daemon did not become reachable within 2s",
+    )))
 }
