@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used)]
 
-use agentd::plugin_spawner::{MockPluginSpawner, PluginSpawner};
+use agentd::plugin_spawner::{MockPluginSpawner, PluginSpawner, RealPluginSpawner};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,4 +36,20 @@ async fn mock_spawner_records_call_and_returns_handle() {
     assert_eq!(recorded[0].0, "opencode");
     assert_eq!(recorded[0].1, PathBuf::from(true_bin));
     assert_eq!(recorded[0].2, PathBuf::from("/tmp/agentd/control.sock"));
+}
+
+#[tokio::test]
+async fn real_spawner_returns_not_found_for_missing_binary() {
+    let s = RealPluginSpawner::new();
+    let r = s
+        .spawn(
+            "nope",
+            Path::new("/nonexistent/binary/agentd-plugin-nope"),
+            Path::new("/tmp/x.sock"),
+        )
+        .await;
+    assert!(matches!(
+        r,
+        Err(agentd::plugin_spawner::SpawnError::NotFound(_))
+    ));
 }

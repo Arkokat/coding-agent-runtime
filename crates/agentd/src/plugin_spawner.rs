@@ -79,3 +79,86 @@ impl PluginSpawner for MockPluginSpawner {
         })
     }
 }
+
+/// Production spawner. Resolves the plugin binary on `PATH` (looking for
+/// `agentd-plugin-<name>`) and spawns it as a child process. The child
+/// receives `--control-socket <path>` so it can connect back.
+pub struct RealPluginSpawner;
+
+impl RealPluginSpawner {
+    /// Build a new `RealPluginSpawner`.
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Resolve `agentd-plugin-<name>` to a concrete path. Tries:
+    /// 1. `PATH` lookup (the normal install path).
+    /// 2. `./target/debug/agentd-plugin-<name>`.
+    /// 3. `./target/release/agentd-plugin-<name>`.
+    /// 4. Falls back to the bare name; the caller will surface `NotFound`.
+    fn resolve(name: &str) -> PathBuf {
+        let exe = format!("agentd-plugin-{name}");
+        if let Ok(p) = which(&exe) {
+            return p;
+        }
+        for suffix in ["target/debug", "target/release"] {
+            if let Some(c) = std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join(suffix).join(&exe))
+            {
+                if c.is_file() {
+                    return c;
+                }
+            }
+        }
+        PathBuf::from(exe)
+    }
+}
+
+impl Default for RealPluginSpawner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl PluginSpawner for RealPluginSpawner {
+    async fn spawn(
+        &self,
+        name: &str,
+        binary: &Path,
+        _control_socket: &Path,
+    ) -> Result<PluginHandle, SpawnError> {
+        let resolved = if binary == Path::new("") {
+            Self::resolve(name)
+        } else {
+            binary.to_path_buf()
+        };
+        if !resolved.exists() {
+            return Err(SpawnError::NotFound(resolved));
+        }
+        let child = tokio::process::Command::new(&resolved)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(SpawnError::Io)?;
+        Ok(PluginHandle {
+            name: name.to_string(),
+            child,
+        })
+    }
+}
+
+/// Tiny `which`-like PATH lookup. Returns the first match.
+fn which(name: &str) -> Result<PathBuf, ()> {
+    let path = std::env::var_os("PATH").ok_or(())?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(())
+}
