@@ -29,6 +29,10 @@ cargo audit                               # security advisories
 
 CI: GitHub Actions. PR build runs unit + integration on 4 OS/arch targets. Push to `main` runs the same. Tags trigger release workflow.
 
+### `#[ignore]` convention
+
+A test marked `#[ignore = "needs <feature> (some local sandboxes block it)"]` is one that needs a host capability some developer sandboxes don't allow (e.g. AF_UNIX `connect`). Local `cargo nextest run` skips these; CI runs them via `cargo nextest run --run-ignored all`. Use this for environment-dependent tests, not for slow tests — use `#[ignore = "slow"]` for those and a separate `--profile slow` nextest config. See `docs/superpowers/specs/2026-06-20-ci-only-test-tags-design.md`.
+
 ## TDD workflow
 
 **Always write a failing test first.** See `docs/workflows/tdd.md`.

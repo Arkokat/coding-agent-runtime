@@ -30,18 +30,24 @@ pub fn clippy() -> ! {
     run(cmd)
 }
 
-/// `cargo test --workspace`
+/// `cargo nextest run --workspace` — local test runner, skips `#[ignore]`
+/// tests (those need host features a local sandbox may block; see
+/// `docs/superpowers/specs/2026-06-20-ci-only-test-tags-design.md`).
 pub fn test() -> ! {
     let mut cmd = Command::new("cargo");
-    cmd.args(["test", "--workspace"]);
+    cmd.args(["nextest", "run", "--workspace"]);
     run(cmd)
 }
 
-/// Run fmt → clippy → test. Fails fast.
+/// Run fmt → clippy → test. Fails fast. Always runs `#[ignore]` tests
+/// via `--run-ignored all` so CI catches regressions in env-dependent
+/// code paths.
 #[allow(unreachable_code)] // each subcommand is `-> !`, so the chain is "unreachable" by lint rules
 pub fn ci() -> ! {
-    eprintln!("xtask: ci (fmt → clippy → test)");
+    eprintln!("xtask: ci (fmt → clippy → test, including #[ignore])");
     fmt();
     clippy();
-    test();
+    let mut cmd = Command::new("cargo");
+    cmd.args(["nextest", "run", "--run-ignored", "all", "--workspace"]);
+    run(cmd)
 }
