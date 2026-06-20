@@ -50,8 +50,7 @@ async fn autostart_spawns_every_plugin_in_manifest() {
     let (paths, db, bus) = fresh("spawns");
     let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
     let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
-    let mut sup = PluginSupervisor::new(bus, &db, two_plugin_manifest());
-    sup.set_spawner(spawner);
+    let sup = PluginSupervisor::new(bus, &db, two_plugin_manifest(), spawner);
     let n = sup.autostart(&paths).await.expect("autostart");
     assert_eq!(n, 2, "both plugins should have been spawned");
 
@@ -79,8 +78,7 @@ autostart = false
     let manifest: agentd::plugins_manifest::PluginsManifest = toml::from_str(toml).expect("parse");
     let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
     let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
-    let mut sup = PluginSupervisor::new(bus, &db, manifest);
-    sup.set_spawner(spawner);
+    let sup = PluginSupervisor::new(bus, &db, manifest, spawner);
     let n = sup.autostart(&paths).await.expect("autostart");
     assert_eq!(n, 0);
     assert!(calls.lock().is_empty());

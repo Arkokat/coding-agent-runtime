@@ -51,12 +51,15 @@ fn daemon_new_resolves_paths_and_does_not_boot() {
     let db = Db::open(&paths.state_db_path).expect("open");
     agentd::db::migrations::run(&db).expect("migrate");
     let bus = EventBus::default();
+    let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
     let d = Daemon::new(
         paths,
         db,
         bus,
-        Box::new(MockTmux::new()),
+        Arc::new(MockTmux::new()),
         agentd::plugins_manifest::PluginsManifest::default(),
+        spawner,
     );
     // Constructing does not bind anything.
     assert!(
@@ -155,8 +158,14 @@ autostart = true
     let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
 
     // Construct a daemon that has the spawner wired through the supervisor.
-    let mut d = Daemon::new(paths.clone(), db, bus, Box::new(MockTmux::new()), manifest);
-    d.supervisor.set_spawner(spawner);
+    let d = Daemon::new(
+        paths.clone(),
+        db,
+        bus,
+        Arc::new(MockTmux::new()),
+        manifest,
+        spawner,
+    );
     let shutdown = d.shutdown_handle();
     let socket_path = paths.control_socket_path.clone();
 
@@ -216,11 +225,10 @@ autostart = false
 "#;
     let manifest: PluginsManifest = toml::from_str(toml).expect("parse");
     let bus = EventBus::default();
-    let mut sup = PluginSupervisor::new(bus, &db, manifest);
     let calls: Arc<parking_lot::Mutex<Vec<(String, PathBuf, PathBuf)>>> =
         Arc::new(parking_lot::Mutex::new(Vec::new()));
     let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
-    sup.set_spawner(spawner);
+    let mut sup = PluginSupervisor::new(bus, &db, manifest, spawner);
     sup.set_paths(paths.clone());
 
     let n = restart_respawn(&db, &sup).await.expect("restart");

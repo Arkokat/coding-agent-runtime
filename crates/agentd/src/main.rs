@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use agentd::cli::{self, Cli, Command, DaemonAction, PluginAction};
@@ -98,7 +99,7 @@ fn init_tracing(quiet: bool) {
 fn daemon(action: DaemonAction) -> Result<()> {
     use agentd::daemon::Daemon;
     use agentd::event_bus::EventBus;
-    use agentd::plugins_manifest::PluginsManifest;
+    use agentd::plugin_spawner::RealPluginSpawner;
     use agentd::tmux::RealTmux;
     match action {
         DaemonAction::Start { foreground, .. } => {
@@ -109,17 +110,13 @@ fn daemon(action: DaemonAction) -> Result<()> {
             agentd::db::migrations::run(&db)?;
             let manifest = load_manifest(&paths)?;
             let bus = EventBus::default();
-            let mut d = Daemon::new(
+            let d = Daemon::new(
                 paths,
                 db,
                 bus,
-                Box::new(RealTmux::new()),
-                PluginsManifest::default(),
-            );
-            d.supervisor = agentd::plugin_supervisor::PluginSupervisor::new(
-                agentd::event_bus::EventBus::default(),
-                &d.db,
+                Arc::new(RealTmux::new()),
                 manifest,
+                Arc::new(RealPluginSpawner::new()),
             );
             install_signal_handler(d.shutdown_handle());
             if !foreground {

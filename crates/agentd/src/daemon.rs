@@ -3,6 +3,7 @@ use crate::db::Db;
 use crate::event_bus::EventBus;
 use crate::ipc::control::ControlServer;
 use crate::paths::Paths;
+use crate::plugin_spawner::PluginSpawner;
 use crate::plugin_supervisor::PluginSupervisor;
 use crate::plugins_manifest::PluginsManifest;
 use crate::tmux::Tmux;
@@ -105,7 +106,7 @@ pub struct Daemon {
     /// Shared event bus.
     pub bus: EventBus,
     /// Tmux backend (`RealTmux` in production, `MockTmux` in tests).
-    pub tmux: Box<dyn Tmux>,
+    pub tmux: Arc<dyn Tmux>,
     /// Plugin supervisor (manifest + spawner + connection state).
     pub supervisor: PluginSupervisor,
     /// Flag set by external callers (CLI, signal handler) to ask the
@@ -115,14 +116,19 @@ pub struct Daemon {
 
 impl Daemon {
     /// Build a `Daemon` from its parts. Does no I/O — pure constructor.
+    ///
+    /// `spawner` is required: the supervisor uses it to launch plugin
+    /// children. Tests pass a `MockPluginSpawner`; production passes a
+    /// `RealPluginSpawner`.
     pub fn new(
         paths: Paths,
         db: Db,
         bus: EventBus,
-        tmux: Box<dyn Tmux>,
+        tmux: Arc<dyn Tmux>,
         manifest: PluginsManifest,
+        spawner: Arc<dyn PluginSpawner>,
     ) -> Self {
-        let supervisor = PluginSupervisor::new(bus.clone(), &db, manifest);
+        let supervisor = PluginSupervisor::new(bus.clone(), &db, manifest, spawner);
         Self {
             paths,
             db,
@@ -160,7 +166,8 @@ impl Daemon {
         // Step 5: restart-respawn. Stash paths on the supervisor first so
         // `ensure_plugin` can resolve per-plugin UDS paths.
         self.supervisor.set_paths(self.paths.clone());
-        let _spawned = restart_respawn(&self.db, &self.supervisor).await?;
+        let spawned = restart_respawn(&self.db, &self.supervisor).await?;
+        tracing::info!(spawned, "restart_respawn complete");
         // Step 6: bind control UDS.
         let control = ControlServer::bind(&self.paths.control_socket_path)?;
         let control_handle = tokio::spawn(async move {

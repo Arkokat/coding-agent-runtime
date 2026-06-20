@@ -38,13 +38,22 @@ pub struct PluginSupervisor {
 }
 
 impl PluginSupervisor {
-    pub fn new(bus: EventBus, db: &Db, manifest: PluginsManifest) -> Self {
+    /// Build a new supervisor with its bus, a re-opened `Db`, the plugin
+    /// manifest, and a spawner. The bus is the SAME bus the daemon uses
+    /// (cloned), so events emitted by the supervisor reach the daemon's
+    /// subscribers and vice versa.
+    pub fn new(
+        bus: EventBus,
+        db: &Db,
+        manifest: PluginsManifest,
+        spawner: Arc<dyn PluginSpawner>,
+    ) -> Self {
         Self {
             bus: SharedEventBus::new(bus),
             db: Db::reopen(db),
             manifest,
             connected: Mutex::new(Vec::new()),
-            spawner: parking_lot::Mutex::new(None),
+            spawner: parking_lot::Mutex::new(Some(spawner)),
             handles: Mutex::new(HashMap::new()),
             heartbeats: parking_lot::Mutex::new(HashMap::new()),
             paths: parking_lot::Mutex::new(None),
@@ -52,9 +61,9 @@ impl PluginSupervisor {
         }
     }
 
-    /// Mutator. Set the spawner after construction; needed for tests
-    /// that inject `MockPluginSpawner` without going through
-    /// `Daemon::new` (which doesn't take a spawner in v1).
+    /// Mutator. Replace the spawner. `Daemon::new` already wires one
+    /// in; this is kept for tests that want to swap to a recording mock
+    /// after construction.
     pub fn set_spawner(&mut self, spawner: Arc<dyn PluginSpawner>) {
         *self.spawner.lock() = Some(spawner);
     }

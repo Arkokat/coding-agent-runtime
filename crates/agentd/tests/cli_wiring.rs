@@ -19,12 +19,19 @@ async fn foreground_daemon_starts_and_shuts_down() {
     let db = agentd::db::Db::open(&paths.state_db_path).expect("open");
     agentd::db::migrations::run(&db).expect("migrate");
     let bus = agentd::event_bus::EventBus::default();
+    let calls: std::sync::Arc<
+        parking_lot::Mutex<Vec<(String, std::path::PathBuf, std::path::PathBuf)>>,
+    > = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let spawner: std::sync::Arc<dyn agentd::plugin_spawner::PluginSpawner> = std::sync::Arc::new(
+        agentd::plugin_spawner::MockPluginSpawner::new(std::sync::Arc::clone(&calls)),
+    );
     let d = agentd::daemon::Daemon::new(
         paths.clone(),
         db,
         bus,
-        Box::new(agentd::tmux::MockTmux::new()),
+        std::sync::Arc::new(agentd::tmux::MockTmux::new()),
         agentd::plugins_manifest::PluginsManifest::default(),
+        spawner,
     );
     let shutdown = d.shutdown_handle();
     let socket_path = paths.control_socket_path.clone();
@@ -74,12 +81,19 @@ fn spawn_foreground_daemon(
     let db = agentd::db::Db::open(&paths.state_db_path).expect("open");
     agentd::db::migrations::run(&db).expect("migrate");
     let bus = agentd::event_bus::EventBus::default();
+    let calls: std::sync::Arc<
+        parking_lot::Mutex<Vec<(String, std::path::PathBuf, std::path::PathBuf)>>,
+    > = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let spawner: std::sync::Arc<dyn agentd::plugin_spawner::PluginSpawner> = std::sync::Arc::new(
+        agentd::plugin_spawner::MockPluginSpawner::new(std::sync::Arc::clone(&calls)),
+    );
     let d = agentd::daemon::Daemon::new(
         paths.clone(),
         db,
         bus,
-        Box::new(agentd::tmux::MockTmux::new()),
+        std::sync::Arc::new(agentd::tmux::MockTmux::new()),
         agentd::plugins_manifest::PluginsManifest::default(),
+        spawner,
     );
     let shutdown = d.shutdown_handle();
     let join = local.spawn_local(async move {
