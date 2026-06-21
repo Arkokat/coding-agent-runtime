@@ -19,6 +19,10 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+/// Re-export `uuid` so plugins can construct the same `Uuid` type the
+/// SDK uses internally without taking a direct dependency on `uuid`.
+pub use uuid;
+
 /// Re-export the protocol version the SDK targets. Plugins built
 /// against this SDK send this version in `plugin.hello`.
 pub const SDK_PROTOCOL_VERSION: u32 = agentd_protocol::PROTOCOL_VERSION;
