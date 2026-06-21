@@ -134,12 +134,14 @@ fn run_subscribe(
     req: &Value,
 ) {
     let (sub_id, mut rx) = registry.register();
-    let filter = req.get("params").cloned().unwrap_or(json!({}));
+    // The `filter` parameter is accepted but not enforced in v1. The
+    // registry fans out every event to all subscribers; a future
+    // task may add prefix matching against `filter["events"]`.
+    let _filter = req.get("params").cloned().unwrap_or(json!({}));
     let ack = json_rpc_result(
         id,
         &json!({
             "subscription_id": sub_id,
-            "filter": filter,
         }),
     );
     if write_response(writer, &ack).is_err() {

@@ -96,9 +96,6 @@ pub struct TuiState {
     pub new_modal: Option<NewModal>,
     /// Transient status line message and its expiry.
     pub status_message: Option<(String, Instant)>,
-    /// Path stashed by the new-session modal `Enter`; the event loop
-    /// picks it up and calls `session.create` on the daemon.
-    pub pending_create: Option<PathBuf>,
 }
 
 impl Default for TuiState {
@@ -122,7 +119,6 @@ impl TuiState {
             rename_modal: None,
             new_modal: None,
             status_message: None,
-            pending_create: None,
         }
     }
 
@@ -154,6 +150,7 @@ impl TuiState {
     }
 
     /// Apply an event from the daemon. Mutates state and sets `dirty`.
+    #[allow(clippy::too_many_lines)]
     pub fn apply_event(&mut self, event: &Event) {
         let now = Instant::now();
         match event.kind.as_str() {
@@ -202,6 +199,15 @@ impl TuiState {
                                 self.recompute_counters();
                             }
                         }
+                    }
+                }
+            }
+            "session.dismissed_error" => {
+                if let Some(id) = event.session_id {
+                    if let Some(s) = self.sessions.iter_mut().find(|x| x.id == id) {
+                        s.status = SessionStatus::Idle;
+                        self.flash_until.insert(id, now + FLASH_DURATION);
+                        self.recompute_counters();
                     }
                 }
             }

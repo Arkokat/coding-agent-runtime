@@ -91,11 +91,6 @@ pub async fn run() -> anyhow::Result<()> {
                 state.tick_flash(Instant::now());
                 last_flash_tick = Instant::now();
             }
-            // Apply any pending create from a modal commit.
-            if let Some(target) = state.pending_create.take() {
-                // (already handled in handle_new_modal_key; this is a no-op for now)
-                let _ = target;
-            }
 
             // Render if dirty or flash window active.
             let need_redraw = state.dirty
