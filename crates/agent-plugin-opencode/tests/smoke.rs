@@ -10,7 +10,7 @@ fn help_flag_prints_usage() {
         .expect("run");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("agentd-plugin-opencode"), "got: {stdout}");
-    assert!(stdout.contains("--socket"), "got: {stdout}");
+    assert!(stdout.contains("--control-socket"), "got: {stdout}");
     assert!(stdout.contains("--mock"), "got: {stdout}");
     assert!(stdout.contains("--watch"), "got: {stdout}");
     assert!(stdout.contains("--stdin"), "got: {stdout}");

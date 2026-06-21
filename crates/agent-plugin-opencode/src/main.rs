@@ -6,49 +6,17 @@
 //!   `session.status_changed` events to the daemon.
 //! - `--stdin`: NDJSON from stdin (backward compat).
 //! - `--mock`: scripted events (backward compat, used in tests).
+//!
+//! Connects to the daemon over the UDS at `--control-socket`.
 
 use std::path::Path;
-use std::path::PathBuf;
 use std::time::Duration;
 
+use agent_plugin_opencode::Cli;
 use agentd_plugin_sdk::{AgentdClient, Backend, Event, MockBackend, RealBackend};
 use anyhow::Result;
 use clap::Parser;
 use tokio::io::BufReader;
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "agentd-plugin-opencode",
-    version,
-    about = "Reference agentd plugin for opencode-style events"
-)]
-#[allow(clippy::struct_excessive_bools)] // clap idiom: one bool per flag
-struct Cli {
-    /// Path to the plugin UDS to connect to.
-    #[arg(long, env = "AGENTD_PLUGIN_SOCKET")]
-    socket: PathBuf,
-
-    /// Run in watch mode: discover opencode tmux panes and poll for
-    /// status. This is the default mode.
-    #[arg(long)]
-    watch: bool,
-
-    /// Run in mock mode: emit a scripted sequence and exit.
-    #[arg(long)]
-    mock: bool,
-
-    /// Read NDJSON events from stdin (legacy mode).
-    #[arg(long)]
-    stdin: bool,
-
-    /// Polling interval for watch mode, in milliseconds.
-    #[arg(long, default_value = "2000", env = "AGENTD_OPENCODE_POLL_MS")]
-    poll_interval_ms: u64,
-
-    /// Skip the `plugin.hello` call (for tests).
-    #[arg(long)]
-    no_hello: bool,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -59,7 +27,7 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = Cli::parse();
-    let mut client = AgentdClient::connect(&cli.socket).await?;
+    let mut client = AgentdClient::connect(&cli.control_socket).await?;
     if !cli.no_hello {
         let _ = client
             .hello(

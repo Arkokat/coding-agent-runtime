@@ -6,7 +6,7 @@ calls to the daemon.
 
 ## Public API
 - Binary `agentd-plugin-opencode`
-- Flags: `--socket <path>` (required), `--mock` (scripted events), `--no-hello` (skip hello)
+- Flags: `--control-socket <path>` (required), `--mock` (scripted events), `--no-hello` (skip hello)
 
 ## Constraints
 - Reference only. The real opencode bridge is post-v1.

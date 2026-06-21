@@ -6,5 +6,8 @@
 
 #![warn(missing_docs)]
 
+pub mod cli;
 pub mod discovery;
 pub mod watcher;
+
+pub use crate::cli::Cli;
