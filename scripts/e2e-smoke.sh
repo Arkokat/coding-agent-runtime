@@ -47,11 +47,10 @@ done
 # --- 1. Build ---------------------------------------------------------------
 # Build both the daemon AND the opencode plugin (the daemon spawns the plugin
 # by name, so the plugin's binary must be on $PATH at daemon-start time).
+# Always rebuild — smoke tests live or die by running the latest source.
 TARGET_BIN="$REPO_ROOT/target/debug"
-if [[ ! -x "$AGENTD_BIN" || ! -x "$TARGET_BIN/agentd-plugin-opencode" ]]; then
-  echo ">> Building agentd + agentd-plugin-opencode (debug)..."
-  (cd "$REPO_ROOT" && cargo build -p agentd -p agentd-plugin-opencode)
-fi
+echo ">> Building agentd + agentd-plugin-opencode (debug)..."
+(cd "$REPO_ROOT" && cargo build -p agentd -p agentd-plugin-opencode)
 # Make the plugin (and any other in-tree binaries) discoverable on $PATH.
 export PATH="$TARGET_BIN:$PATH"
 # Belt-and-suspenders: also tell the daemon EXACTLY where the plugin
