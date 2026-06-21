@@ -22,6 +22,28 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENTD_BIN="$REPO_ROOT/target/debug/agentd"
 
+# --- 0. Args ----------------------------------------------------------------
+# `--keep-tmp` preserves $TMPDIR on exit (so logs survive for inspection).
+# `--log-file <path>` sets AGENTD_LOG_FILE; defaults to
+# `$TMPDIR/state/agentd/daemon.log` once TMPDIR is known (see step 2).
+KEEP_TMP=0
+LOG_FILE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep-tmp) KEEP_TMP=1; shift ;;
+    --log-file)  LOG_FILE="$2"; shift 2 ;;
+    -h|--help)
+      cat <<USAGE
+Usage: $0 [--keep-tmp] [--log-file <path>]
+  --keep-tmp      preserve the temp XDG tree on exit
+  --log-file <p>  write daemon + plugin tracing to <p>
+USAGE
+      exit 0
+      ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
 # --- 1. Build ---------------------------------------------------------------
 if [[ ! -x "$AGENTD_BIN" ]]; then
   echo ">> Building agentd (debug)..."
@@ -43,7 +65,11 @@ cleanup() {
     kill "$DAEMON_PID" 2>/dev/null || true
   fi
   tmux kill-session -t agentd-e2e 2>/dev/null || true
-  rm -rf "$TMPDIR"
+  if [[ "$KEEP_TMP" -eq 1 ]]; then
+    echo ">> --keep-tmp: preserving $TMPDIR (logs at $LOG_FILE)" >&2
+  else
+    rm -rf "$TMPDIR"
+  fi
   exit "$rc"
 }
 trap cleanup EXIT INT TERM
@@ -53,6 +79,20 @@ export XDG_DATA_HOME="$TMPDIR/data"
 export XDG_STATE_HOME="$TMPDIR/state"
 export XDG_CONFIG_HOME="$TMPDIR/config"
 mkdir -p "$XDG_RUNTIME_DIR" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
+
+# Default log file: under the temp XDG state dir so cleanup --keep-tmp
+# can find it. User can override with --log-file.
+if [[ -z "$LOG_FILE" ]]; then
+  LOG_FILE="$XDG_STATE_HOME/agentd/daemon.log"
+fi
+mkdir -p "$(dirname "$LOG_FILE")"
+export AGENTD_LOG_FILE="$LOG_FILE"
+# Verbose tracing. `info` is the default; the targeted `debug` and
+# `trace` levels surface the watcher tick, the plugin accept loop,
+# and the discovery pass — the exact signals the smoke test needs
+# to diagnose "no opencode session was discovered" failures.
+export RUST_LOG="agentd=debug,agentd::plugin_supervisor=trace,agent_plugin_opencode=debug,agentd_plugin_sdk=debug,info"
+echo ">> log file: $LOG_FILE"
 
 # --- 2b. Minimal config so the opencode plugin is autostarted --------------
 mkdir -p "$XDG_CONFIG_HOME/agentd"
@@ -78,6 +118,12 @@ done
 if [[ ! -S "$CONTROL_UDS" ]]; then
   echo "FAIL: daemon did not bind $CONTROL_UDS within 5s" >&2
   echo "      (often a sandbox issue: see scripts/README.md)" >&2
+  if [[ -f "$LOG_FILE" ]]; then
+    echo ">> Last 60 lines of $LOG_FILE:" >&2
+    tail -60 "$LOG_FILE" >&2 || true
+  else
+    echo ">> No log file at $LOG_FILE" >&2
+  fi
   exit 1
 fi
 echo ">> Daemon ready: $CONTROL_UDS"
@@ -111,10 +157,22 @@ TOTAL=$(sqlite3 "$DB" \
   2>/dev/null || echo 0)
 if [[ "$TOTAL" -eq 0 ]]; then
   echo "FAIL: no opencode session was discovered in $DB" >&2
+  if [[ -f "$LOG_FILE" ]]; then
+    echo ">> Last 60 lines of $LOG_FILE:" >&2
+    tail -60 "$LOG_FILE" >&2 || true
+  else
+    echo ">> No log file at $LOG_FILE" >&2
+  fi
   exit 1
 fi
 if [[ "$FOUND_FINISHED" -eq 0 ]]; then
   echo "FAIL: discovered $TOTAL opencode session(s) but none reached 'finished' within 30s" >&2
+  if [[ -f "$LOG_FILE" ]]; then
+    echo ">> Last 60 lines of $LOG_FILE:" >&2
+    tail -60 "$LOG_FILE" >&2 || true
+  else
+    echo ">> No log file at $LOG_FILE" >&2
+  fi
   sqlite3 "$DB" \
     "SELECT id, agent_type, status, source, created_at
      FROM sessions WHERE agent_type='opencode'
