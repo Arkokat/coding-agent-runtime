@@ -49,8 +49,8 @@ done
 # by name, so the plugin's binary must be on $PATH at daemon-start time).
 # Always rebuild — smoke tests live or die by running the latest source.
 TARGET_BIN="$REPO_ROOT/target/debug"
-echo ">> Building agentd + agentd-plugin-opencode (debug)..."
-(cd "$REPO_ROOT" && cargo build -p agentd -p agentd-plugin-opencode)
+echo ">> Building agentd + agent-plugin-opencode (debug)..."
+(cd "$REPO_ROOT" && cargo build -p agentd -p agent-plugin-opencode)
 # Make the plugin (and any other in-tree binaries) discoverable on $PATH.
 export PATH="$TARGET_BIN:$PATH"
 # Belt-and-suspenders: also tell the daemon EXACTLY where the plugin
