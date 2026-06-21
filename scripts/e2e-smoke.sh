@@ -54,6 +54,11 @@ if [[ ! -x "$AGENTD_BIN" || ! -x "$TARGET_BIN/agentd-plugin-opencode" ]]; then
 fi
 # Make the plugin (and any other in-tree binaries) discoverable on $PATH.
 export PATH="$TARGET_BIN:$PATH"
+# Belt-and-suspenders: also tell the daemon EXACTLY where the plugin
+# lives via $AGENTD_PLUGIN_BIN_DIR. cwd and PATH can be unreliable
+# after the daemon's double-fork detach; this env var is read by
+# `RealPluginSpawner::resolve` as the first lookup step.
+export AGENTD_PLUGIN_BIN_DIR="$TARGET_BIN"
 
 # --- 2. Clean temp XDG tree -------------------------------------------------
 # Use `/tmp` directly (not `$TMPDIR`) so the resulting path stays well

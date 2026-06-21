@@ -92,15 +92,30 @@ impl RealPluginSpawner {
     }
 
     /// Resolve `agentd-plugin-<name>` to a concrete path. Tries:
-    /// 1. `PATH` lookup (the normal install path).
-    /// 2. `./target/debug/agentd-plugin-<name>`.
-    /// 3. `./target/release/agentd-plugin-<name>`.
-    /// 4. Falls back to the bare name; the caller will surface `NotFound`.
+    /// 1. `$AGENTD_PLUGIN_BIN_DIR/agentd-plugin-<name>` (explicit override,
+    ///    used by the e2e smoke test so the daemon doesn't depend on cwd
+    ///    or PATH inheritance through the double-fork detach).
+    /// 2. `PATH` lookup (the normal install path).
+    /// 3. `./target/debug/agentd-plugin-<name>`.
+    /// 4. `./target/release/agentd-plugin-<name>`.
+    /// 5. Falls back to the bare name; the caller will surface `NotFound`.
     fn resolve(name: &str) -> PathBuf {
         let exe = format!("agentd-plugin-{name}");
+        // 1. Explicit override via $AGENTD_PLUGIN_BIN_DIR. This wins
+        //    unconditionally so callers (e.g. the e2e smoke test) can
+        //    point at a known absolute path without depending on cwd
+        //    or PATH inheritance through double-fork.
+        if let Ok(dir) = std::env::var("AGENTD_PLUGIN_BIN_DIR") {
+            let candidate = PathBuf::from(dir).join(&exe);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        // 2. PATH lookup.
         if let Ok(p) = which(&exe) {
             return p;
         }
+        // 3-4. cwd-relative target/ lookup (development convenience).
         for suffix in ["target/debug", "target/release"] {
             if let Some(c) = std::env::current_dir()
                 .ok()
@@ -111,6 +126,7 @@ impl RealPluginSpawner {
                 }
             }
         }
+        // 5. Fall back to the bare name; the caller will surface `NotFound`.
         PathBuf::from(exe)
     }
 }
