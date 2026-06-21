@@ -142,15 +142,21 @@ impl PluginSpawner for RealPluginSpawner {
         // so non-UTF-8 paths don't trip the unwrap — `Command::arg`
         // accepts `OsStr` directly.
         let socket_arg = control_socket.as_os_str();
-        let child = tokio::process::Command::new(&resolved)
-            .stdin(Stdio::null())
+        let mut cmd = tokio::process::Command::new(&resolved);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .arg("--control-socket")
-            .arg(socket_arg)
-            .spawn()
-            .map_err(SpawnError::Io)?;
+            .arg(socket_arg);
+        // Forward `AGENTD_LOG_FILE` to the child so plugin tracing
+        // lands in the same file as daemon tracing. Only forward
+        // when set in the parent — never override the child with an
+        // empty value.
+        if let Ok(v) = std::env::var("AGENTD_LOG_FILE") {
+            cmd.env("AGENTD_LOG_FILE", v);
+        }
+        let child = cmd.spawn().map_err(SpawnError::Io)?;
         Ok(PluginHandle {
             name: name.to_string(),
             child,

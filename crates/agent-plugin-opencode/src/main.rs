@@ -20,12 +20,7 @@ use tokio::io::BufReader;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    init_tracing();
     let cli = Cli::parse();
     let mut client = AgentdClient::connect(&cli.control_socket).await?;
     if !cli.no_hello {
@@ -53,6 +48,36 @@ async fn main() -> Result<()> {
     } else {
         run_stdin(&mut client).await
     }
+}
+
+/// Initialize the global `tracing` subscriber for the plugin.
+///
+/// If `AGENTD_LOG_FILE` is set, tracing is written to that file (so
+/// the daemon and its plugin children share one log). Otherwise the
+/// default `tracing_subscriber::fmt` initializer writes to stderr
+/// (which the daemon captures but discards if its own stdout is
+/// `/dev/null`, so this path is best for foreground debugging).
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    if let Ok(path) = std::env::var("AGENTD_LOG_FILE") {
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(file)
+                .with_ansi(false)
+                .try_init();
+            return;
+        }
+    }
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 async fn run_mock(client: &mut AgentdClient) -> Result<()> {

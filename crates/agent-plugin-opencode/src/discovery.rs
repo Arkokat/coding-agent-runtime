@@ -84,8 +84,16 @@ pub async fn discover_with_tmux(tmux: &Path) -> Result<Vec<OpencodePane>, Discov
         }
         Err(other) => return Err(other),
     };
+    tracing::debug!(raw_count = raws.len(), "discovered raw panes");
     let mut out = Vec::new();
     for r in raws {
+        tracing::trace!(
+            session = %r.session,
+            pane = %r.pane_id,
+            pid = r.pid,
+            command = %r.pane_current_command,
+            "raw pane",
+        );
         if !is_opencode_comm(&r.pane_current_command) {
             // pane_current_command is the source of truth: tmux
             // refreshes it on the order of milliseconds, so by the
@@ -112,6 +120,7 @@ pub async fn discover_with_tmux(tmux: &Path) -> Result<Vec<OpencodePane>, Discov
             working_dir: r.working_dir,
         });
     }
+    tracing::debug!(matched = out.len(), "matched opencode panes");
     Ok(out)
 }
 

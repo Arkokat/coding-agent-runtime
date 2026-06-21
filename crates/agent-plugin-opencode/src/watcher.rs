@@ -225,6 +225,13 @@ async fn run_pane_check(
         })
         .collect();
     let (vanished, new_keys) = diff_pane_states(known, &current);
+    let continuing: Vec<&String> = known.keys().filter(|k| current.contains_key(*k)).collect();
+    tracing::debug!(
+        vanished = vanished.len(),
+        new = new_keys.len(),
+        continuing = continuing.len(),
+        "pane_check tick",
+    );
     emit_finished_for_vanished(client, known, vanished).await;
     discover_new_raw_panes(client, known, &all_panes, &new_keys).await;
 }

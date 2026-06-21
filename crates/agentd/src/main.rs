@@ -14,7 +14,7 @@ use agentd::paths::{self, Paths};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.quiet);
+    agentd::tracing_init::init(cli.quiet);
     match cli.command {
         Command::Daemon { action } => daemon(action)?,
         Command::List => list_via_daemon()?,
@@ -83,18 +83,6 @@ fn main() -> Result<()> {
         Command::Uninstall { .. } => println!("agentd uninstall: not yet implemented"),
     }
     Ok(())
-}
-
-fn init_tracing(quiet: bool) {
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        if quiet {
-            EnvFilter::new("error")
-        } else {
-            EnvFilter::new("info")
-        }
-    });
-    let _ = fmt().with_env_filter(filter).try_init();
 }
 
 fn daemon(action: DaemonAction) -> Result<()> {

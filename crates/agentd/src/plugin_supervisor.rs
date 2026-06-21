@@ -374,6 +374,7 @@ async fn accept_loop(
 /// Handle one accepted plugin UDS connection: read NDJSON frames in a
 /// loop, dispatch each through [`plugin_handlers::dispatch`], write
 /// the JSON-RPC response. Stops on EOF, framing error, or write error.
+#[tracing::instrument(level = "debug", skip(stream, db, bus), fields(plugin = %plugin_name))]
 async fn handle_plugin_connection(
     stream: tokio::net::UnixStream,
     db: Db,
@@ -395,17 +396,13 @@ async fn handle_plugin_connection(
             Ok(Ok(n)) => n,
             Ok(Err(e)) => {
                 tracing::debug!(
-                    plugin = %plugin_name,
                     error = %e,
                     "plugin read error; closing connection",
                 );
                 return;
             }
             Err(_) => {
-                tracing::debug!(
-                    plugin = %plugin_name,
-                    "plugin read timeout; closing connection",
-                );
+                tracing::debug!("plugin read timeout; closing connection");
                 return;
             }
         };
@@ -415,11 +412,7 @@ async fn handle_plugin_connection(
         let msg: Value = match serde_json::from_str(line.trim()) {
             Ok(v) => v,
             Err(e) => {
-                tracing::debug!(
-                    plugin = %plugin_name,
-                    error = %e,
-                    "plugin framing error; closing connection",
-                );
+                tracing::debug!(error = %e, "plugin framing error; closing connection");
                 return;
             }
         };
@@ -430,6 +423,7 @@ async fn handle_plugin_connection(
             .unwrap_or("")
             .to_string();
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        tracing::debug!(method = %method, "plugin request");
         let result = plugin_handlers::dispatch(&method, params, &db, &plugin_name, &bus);
         let resp = match result {
             Ok(value) => json!({
@@ -446,6 +440,7 @@ async fn handle_plugin_connection(
                 },
             }),
         };
+        tracing::trace!(method = %method, "plugin response");
         // `framing::write_message` is sync and takes `std::io::Write`;
         // serialize into a `Vec<u8>` first, then push through the
         // async writer (same pattern `bind_and_handshake` uses).
