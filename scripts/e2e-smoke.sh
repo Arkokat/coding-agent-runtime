@@ -45,10 +45,15 @@ USAGE
 done
 
 # --- 1. Build ---------------------------------------------------------------
-if [[ ! -x "$AGENTD_BIN" ]]; then
-  echo ">> Building agentd (debug)..."
-  (cd "$REPO_ROOT" && cargo build -p agentd)
+# Build both the daemon AND the opencode plugin (the daemon spawns the plugin
+# by name, so the plugin's binary must be on $PATH at daemon-start time).
+TARGET_BIN="$REPO_ROOT/target/debug"
+if [[ ! -x "$AGENTD_BIN" || ! -x "$TARGET_BIN/agentd-plugin-opencode" ]]; then
+  echo ">> Building agentd + agentd-plugin-opencode (debug)..."
+  (cd "$REPO_ROOT" && cargo build -p agentd -p agentd-plugin-opencode)
 fi
+# Make the plugin (and any other in-tree binaries) discoverable on $PATH.
+export PATH="$TARGET_BIN:$PATH"
 
 # --- 2. Clean temp XDG tree -------------------------------------------------
 # Use `/tmp` directly (not `$TMPDIR`) so the resulting path stays well
