@@ -94,31 +94,72 @@ pub async fn discover_with_tmux(tmux: &Path) -> Result<Vec<OpencodePane>, Discov
             command = %r.pane_current_command,
             "raw pane",
         );
-        if !is_opencode_comm(&r.pane_current_command) {
-            // pane_current_command is the source of truth: tmux
-            // refreshes it on the order of milliseconds, so by the
-            // time a pane exists the field is up to date.
-            // Fall back to reading the pid's comm for the very
-            // narrow window where tmux has not yet refreshed
-            // (e.g. a pane that just exec'd opencode).
-            if let Some(comm) = read_opencode_comm(r.pid).await {
-                if is_opencode_comm(&comm) {
-                    out.push(OpencodePane {
-                        tmux_session: r.session,
-                        pane_id: r.pane_id,
-                        pane_pid: r.pid,
-                        working_dir: r.working_dir,
-                    });
-                }
-            }
+        if is_opencode_comm(&r.pane_current_command) {
+            // pane_current_command is "opencode" — include directly.
+            out.push(OpencodePane {
+                tmux_session: r.session,
+                pane_id: r.pane_id,
+                pane_pid: r.pid,
+                working_dir: r.working_dir,
+            });
             continue;
         }
-        out.push(OpencodePane {
-            tmux_session: r.session,
-            pane_id: r.pane_id,
-            pane_pid: r.pid,
-            working_dir: r.working_dir,
-        });
+        // pane_current_command is something else (e.g. "node", "zsh").
+        // First, read the foreground process's comm via /proc (Linux)
+        // or ps (macOS) to catch the narrow window where tmux has not
+        // yet refreshed.
+        if let Some(comm) = read_opencode_comm(r.pid).await {
+            if is_opencode_comm(&comm) {
+                out.push(OpencodePane {
+                    tmux_session: r.session,
+                    pane_id: r.pane_id,
+                    pane_pid: r.pid,
+                    working_dir: r.working_dir,
+                });
+                continue;
+            }
+        }
+        // Second, on macOS, check the full command line of the
+        // foreground process. opencode invoked via nvm launches a
+        // `node` process whose argv contains "opencode" — but
+        // comm and pane_current_command are both "node".
+        #[cfg(target_os = "macos")]
+        if is_opencode_process(r.pid).await {
+            tracing::debug!(
+                pane = %r.pane_id,
+                command = %r.pane_current_command,
+                pid = r.pid,
+                "matched opencode via command-line substring",
+            );
+            out.push(OpencodePane {
+                tmux_session: r.session,
+                pane_id: r.pane_id,
+                pane_pid: r.pid,
+                working_dir: r.working_dir,
+            });
+            continue;
+        }
+        // Third, on macOS, if the pane's foreground is a shell
+        // (e.g. zsh) and opencode is its direct child, walk one
+        // level of the process tree to find it.
+        #[cfg(target_os = "macos")]
+        if let Some(child_pid) = first_child_pid(r.pid).await {
+            if is_opencode_process(child_pid).await {
+                tracing::debug!(
+                    pane = %r.pane_id,
+                    command = %r.pane_current_command,
+                    pid = r.pid,
+                    child = child_pid,
+                    "matched opencode via child process",
+                );
+                out.push(OpencodePane {
+                    tmux_session: r.session,
+                    pane_id: r.pane_id,
+                    pane_pid: r.pid,
+                    working_dir: r.working_dir,
+                });
+            }
+        }
     }
     tracing::debug!(matched = out.len(), "matched opencode panes");
     Ok(out)
@@ -214,6 +255,23 @@ pub fn is_opencode_comm(comm: &str) -> bool {
     first.eq_ignore_ascii_case("opencode")
 }
 
+/// Return true iff the full process command line contains `opencode`
+/// (case-insensitive substring). Used to catch invocations like
+/// `node /path/to/opencode.js run 'msg'` where the foreground
+/// `pane_current_command` is `node`, not `opencode`.
+pub fn command_line_contains_opencode(cmd: &str) -> bool {
+    cmd.to_lowercase().contains("opencode")
+}
+
+/// Parse the first PID from `pgrep -P <ppid>` output. `pgrep` may
+/// return multiple children on the same line (newline-separated by
+/// default, but on one line if the count is small); we take the first
+/// whitespace-delimited token. Returns `None` for empty input or a
+/// non-numeric first token.
+pub(crate) fn parse_first_child_pid_line(s: &str) -> Option<u32> {
+    s.split_whitespace().next()?.parse().ok()
+}
+
 /// Read the foreground-process `comm` for `pid`, or `None` if the
 /// process does not exist or its comm is unreadable.
 async fn read_opencode_comm(pid: u32) -> Option<String> {
@@ -256,6 +314,42 @@ pub(crate) async fn read_comm_via_ps(pid: u32) -> Option<String> {
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() { None } else { Some(s) }
+}
+
+/// macOS-only helper: return true iff `pid`'s full command line
+/// (from `ps -p <pid> -o command=`) contains `opencode`. Catches the
+/// `node /path/to/opencode.js run 'msg'` case where
+/// `pane_current_command` reports `node` and not `opencode`.
+#[cfg(target_os = "macos")]
+async fn is_opencode_process(pid: u32) -> bool {
+    let out = tokio::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .await
+        .ok();
+    let Some(out) = out else { return false };
+    if !out.status.success() {
+        return false;
+    }
+    let cmd = String::from_utf8_lossy(&out.stdout);
+    command_line_contains_opencode(&cmd)
+}
+
+/// macOS-only helper: return the PID of the first direct child of
+/// `ppid` (per `pgrep -P <ppid>`), or `None` if there are no children
+/// or `pgrep` is unavailable.
+#[cfg(target_os = "macos")]
+async fn first_child_pid(ppid: u32) -> Option<u32> {
+    let out = tokio::process::Command::new("pgrep")
+        .args(["-P", &ppid.to_string()])
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    parse_first_child_pid_line(&s)
 }
 
 #[cfg(test)]
@@ -355,6 +449,41 @@ mod tests {
         assert!(!is_opencode_comm("node"));
         assert!(!is_opencode_comm(""));
         assert!(!is_opencode_comm("opencodex"));
+    }
+
+    #[test]
+    fn command_line_contains_opencode_matches_node_invocation() {
+        let line = "node /Users/foo/.nvm/versions/node/v24.14.1/bin/../lib/node_modules/opencode/bin/opencode run 'msg'";
+        assert!(command_line_contains_opencode(line));
+    }
+
+    #[test]
+    fn command_line_contains_opencode_matches_direct_invocation() {
+        assert!(command_line_contains_opencode("opencode run 'msg'"));
+    }
+
+    #[test]
+    fn command_line_contains_opencode_rejects_other_commands() {
+        assert!(!command_line_contains_opencode("bash"));
+        assert!(!command_line_contains_opencode("vim"));
+        assert!(!command_line_contains_opencode("node /some/other.js"));
+    }
+
+    #[test]
+    fn command_line_contains_opencode_is_case_insensitive() {
+        assert!(command_line_contains_opencode(
+            "/usr/local/bin/OpenCode run"
+        ));
+        assert!(command_line_contains_opencode("/opt/OPENCODE/bin/opencode"));
+    }
+
+    #[test]
+    fn parse_first_child_pid_line_extracts_pid() {
+        assert_eq!(parse_first_child_pid_line("4242\n"), Some(4242));
+        assert_eq!(parse_first_child_pid_line("4242"), Some(4242));
+        assert_eq!(parse_first_child_pid_line("4242 9999\n"), Some(4242));
+        assert_eq!(parse_first_child_pid_line(""), None);
+        assert_eq!(parse_first_child_pid_line("not-a-pid"), None);
     }
 
     #[cfg(target_os = "linux")]

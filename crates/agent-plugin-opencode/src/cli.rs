@@ -35,13 +35,14 @@ pub struct Cli {
     pub poll_interval_ms: u64,
 
     /// Interval for re-scanning tmux panes (to detect disappeared or
-    /// newly-appeared opencode panes), in milliseconds. Set to 2s
-    /// (down from 10s in earlier versions) so that short-lived
-    /// `opencode run '...'` invocations — which may finish in 2-5s —
-    /// are reliably captured: the `pane_check` arm needs at least one
-    /// tick between opencode starting and finishing to register the
-    /// session before it disappears.
-    #[arg(long, default_value = "2000", env = "AGENTD_OPENCODE_PANE_CHECK_MS")]
+    /// newly-appeared opencode panes), in milliseconds. Set to 1s
+    /// (down from 2s) so that short-lived `opencode run '...'` invocations
+    /// — which may finish in well under 2s — are reliably captured: the
+    /// `pane_check` arm needs at least one tick between opencode
+    /// starting and finishing to register the session before it
+    /// disappears. The re-scan is cheap (one `tmux list-panes` plus a
+    /// few `ps` calls per pane) so the higher tick rate is fine.
+    #[arg(long, default_value = "1000", env = "AGENTD_OPENCODE_PANE_CHECK_MS")]
     pub pane_check_interval_ms: u64,
 
     /// Skip the `plugin.hello` call (for tests).
