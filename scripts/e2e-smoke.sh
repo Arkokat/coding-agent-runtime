@@ -51,11 +51,12 @@ if [[ ! -x "$AGENTD_BIN" ]]; then
 fi
 
 # --- 2. Clean temp XDG tree -------------------------------------------------
-# Use a portable mktemp invocation. On macOS, `mktemp -d -t prefix.XXXXXX`
-# does not expand the XXXXXX template (it appends a random suffix to the
-# whole name), so we let mktemp pick the path and use `mktemp -d -t
-# agentd-e2e` for a friendly prefix.
-TMPDIR="$(mktemp -d -t agentd-e2e)"
+# Use `/tmp` directly (not `$TMPDIR`) so the resulting path stays well
+# under macOS's SUN_LEN=104 limit (UDS sun_path is 104 bytes INCLUDING
+# the null terminator; /var/folders/.../T/ alone is 48 bytes, plus
+# `runtime/agentd/plugin-<name>.sock` is 32 bytes — too close for
+# mktemp's variable random suffix).
+TMPDIR="$(mktemp -d /tmp/agentd-e2e.XXXXXXXX)"
 cleanup() {
   local rc=$?
   set +e
