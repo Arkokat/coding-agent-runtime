@@ -12,6 +12,9 @@ fn help_flag_prints_usage() {
     assert!(stdout.contains("agentd-plugin-opencode"), "got: {stdout}");
     assert!(stdout.contains("--socket"), "got: {stdout}");
     assert!(stdout.contains("--mock"), "got: {stdout}");
+    assert!(stdout.contains("--watch"), "got: {stdout}");
+    assert!(stdout.contains("--stdin"), "got: {stdout}");
+    assert!(stdout.contains("--poll-interval-ms"), "got: {stdout}");
 }
 
 #[test]

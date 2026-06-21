@@ -1,14 +1,15 @@
 //! agentd-plugin-opencode — reference plugin.
 //!
-//! This is the v1 reference: it does not actually spawn an `opencode`
-//! process. It demonstrates how a real plugin is structured: connect
-//! to the plugin UDS, say hello, then forward events from a backend.
-//!
-//! For testing, the plugin runs in `--mock` mode and emits a scripted
-//! sequence. In real mode (the default), it reads NDJSON events from
-//! stdin and forwards each to the daemon.
+//! Three modes:
+//! - `--watch` (default in real mode): discover opencode tmux panes
+//!   and poll their status, emitting `session.discover` and
+//!   `session.status_changed` events to the daemon.
+//! - `--stdin`: NDJSON from stdin (backward compat).
+//! - `--mock`: scripted events (backward compat, used in tests).
 
+use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use agentd_plugin_sdk::{AgentdClient, Backend, Event, MockBackend, RealBackend};
 use anyhow::Result;
@@ -21,14 +22,28 @@ use tokio::io::BufReader;
     version,
     about = "Reference agentd plugin for opencode-style events"
 )]
+#[allow(clippy::struct_excessive_bools)] // clap idiom: one bool per flag
 struct Cli {
     /// Path to the plugin UDS to connect to.
     #[arg(long, env = "AGENTD_PLUGIN_SOCKET")]
     socket: PathBuf,
 
+    /// Run in watch mode: discover opencode tmux panes and poll for
+    /// status. This is the default mode.
+    #[arg(long)]
+    watch: bool,
+
     /// Run in mock mode: emit a scripted sequence and exit.
     #[arg(long)]
     mock: bool,
+
+    /// Read NDJSON events from stdin (legacy mode).
+    #[arg(long)]
+    stdin: bool,
+
+    /// Polling interval for watch mode, in milliseconds.
+    #[arg(long, default_value = "2000", env = "AGENTD_OPENCODE_POLL_MS")]
+    poll_interval_ms: u64,
 
     /// Skip the `plugin.hello` call (for tests).
     #[arg(long)]
@@ -56,6 +71,14 @@ async fn main() -> Result<()> {
                     .unwrap_or_default(),
             )
             .await?;
+    }
+    let use_watch = cli.watch || (!cli.mock && !cli.stdin);
+    let interval = Duration::from_millis(cli.poll_interval_ms);
+    if use_watch {
+        let tmux = Path::new("tmux");
+        let panes = agent_plugin_opencode::discovery::discover_with_tmux(tmux).await?;
+        agent_plugin_opencode::watcher::run(&mut client, panes, interval, tmux).await?;
+        return Ok(());
     }
     if cli.mock {
         run_mock(&mut client).await
