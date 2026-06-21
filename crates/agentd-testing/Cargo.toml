@@ -15,7 +15,7 @@ workspace = true
 agentd-protocol = { path = "../agentd-protocol" }
 serde.workspace = true
 serde_json.workspace = true
-toml = "0.8"
+toml = "1.1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync"] }
 axum.workspace = true
 tempfile.workspace = true
@@ -24,7 +24,7 @@ chrono.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
