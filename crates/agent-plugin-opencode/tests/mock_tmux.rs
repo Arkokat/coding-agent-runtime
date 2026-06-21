@@ -18,11 +18,14 @@ use common::MockTmux;
 
 #[tokio::test]
 async fn discover_with_mock_tmux_returns_empty_for_bogus_panes() {
-    let mock = MockTmux::with_output("dev %0 1 /tmp/proj\ndev %1 2 /tmp/other\n", &HashMap::new());
+    let mock = MockTmux::with_output(
+        "dev %0 1 /tmp/proj zsh\ndev %1 2 /tmp/other bash\n",
+        &HashMap::new(),
+    );
     let panes = discover_with_tmux(mock.path()).await.expect("discovery ok");
     assert!(
         panes.is_empty(),
-        "expected no opencode panes (PIDs 1 and 2 are not opencode), got {panes:?}"
+        "expected no opencode panes (pane_current_command is zsh/bash, not opencode), got {panes:?}"
     );
 }
 

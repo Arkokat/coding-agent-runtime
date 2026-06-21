@@ -26,10 +26,12 @@ fn write_fake_tmux(dir: &std::path::Path, script_body: &str) -> PathBuf {
 #[tokio::test]
 async fn discover_returns_empty_when_fake_tmux_reports_no_opencode() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // The fake `tmux` claims a pane exists with bogus PIDs. `ps -p 1` (and
-    // friends) on a developer machine will return non-zero or report a
-    // comm that is not "opencode", so the discovery result must be empty.
-    let script = "#!/bin/sh\necho \"dev %0 1 /tmp/proj\"\necho \"dev %1 2 /tmp/other\"\n";
+    // The fake `tmux` claims a pane exists with `pane_current_command`
+    // values that are not `opencode` (e.g. `zsh` wrapping the opencode
+    // call). The discovery filter uses `pane_current_command` as the
+    // source of truth, so the result must be empty even though a pane
+    // exists.
+    let script = "#!/bin/sh\necho \"dev %0 1 /tmp/proj zsh\"\necho \"dev %1 2 /tmp/other bash\"\n";
     let fake = write_fake_tmux(dir.path(), script);
 
     let panes = discover_with_tmux(&fake).await.expect("discovery ok");

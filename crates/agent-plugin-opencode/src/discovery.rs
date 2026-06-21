@@ -33,6 +33,11 @@ pub(crate) struct RawPane {
     pub pid: u32,
     /// Working directory reported by tmux for the pane.
     pub working_dir: PathBuf,
+    /// Name of the pane's foreground process as reported by tmux
+    /// (`#{pane_current_command}`). May contain spaces (e.g.
+    /// `"bash -c 'opencode run ...'"`); the parser preserves them
+    /// as a single field.
+    pub pane_current_command: String,
 }
 
 /// Error type for [`discover_opencode_panes`].
@@ -54,9 +59,12 @@ pub enum DiscoveryError {
 /// Scan all tmux panes on the host and return those running `opencode`.
 ///
 /// The current strategy is best-effort and Linux-first:
-/// 1. Shell out to `tmux list-panes -a -F '<session> <pane_id> <pid> <path>'`.
-/// 2. For each pane, read the foreground process's `comm` and keep it iff it
-///    matches `opencode` (case-insensitive on macOS, exact on Linux).
+/// 1. Shell out to `tmux list-panes -a -F '<session> <pane_id> <pid> <path> <comm>'`.
+/// 2. For each pane, keep it iff its `pane_current_command` matches
+///    `opencode` (case-insensitive). As a fallback for the case where
+///    tmux has not yet refreshed `pane_current_command` (e.g. a pane
+///    that just started), also keep panes whose `pid`'s `comm` reads
+///    `opencode` via `/proc/<pid>/comm` (Linux) or `ps` (macOS).
 ///
 /// Returns an empty vector when tmux is not available so the plugin can run
 /// in environments where tmux is not installed.
@@ -68,29 +76,69 @@ pub async fn discover_opencode_panes() -> Result<Vec<OpencodePane>, DiscoveryErr
 /// binary path. Useful for tests (inject a fake `tmux` script) and for
 /// non-standard installs (`$TMUX_BIN`).
 pub async fn discover_with_tmux(tmux: &Path) -> Result<Vec<OpencodePane>, DiscoveryError> {
-    let raw = match run_tmux_list_panes(tmux).await {
-        Ok(s) => s,
+    let raws = match enumerate_panes(tmux).await {
+        Ok(r) => r,
         Err(DiscoveryError::TmuxSpawn(e)) if e.kind() == std::io::ErrorKind::NotFound => {
             // tmux isn't installed: nothing to discover.
             return Ok(Vec::new());
         }
         Err(other) => return Err(other),
     };
-    let raws = parse_tmux_list_panes(&raw);
     let mut out = Vec::new();
     for r in raws {
-        if let Some(comm) = read_opencode_comm(r.pid).await {
-            if is_opencode_comm(&comm) {
-                out.push(OpencodePane {
-                    tmux_session: r.session,
-                    pane_id: r.pane_id,
-                    pane_pid: r.pid,
-                    working_dir: r.working_dir,
-                });
+        if !is_opencode_comm(&r.pane_current_command) {
+            // pane_current_command is the source of truth: tmux
+            // refreshes it on the order of milliseconds, so by the
+            // time a pane exists the field is up to date.
+            // Fall back to reading the pid's comm for the very
+            // narrow window where tmux has not yet refreshed
+            // (e.g. a pane that just exec'd opencode).
+            if let Some(comm) = read_opencode_comm(r.pid).await {
+                if is_opencode_comm(&comm) {
+                    out.push(OpencodePane {
+                        tmux_session: r.session,
+                        pane_id: r.pane_id,
+                        pane_pid: r.pid,
+                        working_dir: r.working_dir,
+                    });
+                }
             }
+            continue;
         }
+        out.push(OpencodePane {
+            tmux_session: r.session,
+            pane_id: r.pane_id,
+            pane_pid: r.pid,
+            working_dir: r.working_dir,
+        });
     }
     Ok(out)
+}
+
+/// Enumerate every tmux pane on the host, regardless of which process
+/// is running in it. The watcher uses this to detect "opencode
+/// finished but the pane is still there" — a case where
+/// [`discover_with_tmux`] will drop the pane (its
+/// `pane_current_command` is no longer `opencode`) but the watcher
+/// must emit `session.finished` for the previously discovered
+/// session.
+///
+/// Returns an empty vector when tmux is not available.
+pub(crate) async fn enumerate_panes(tmux: &Path) -> Result<Vec<RawPane>, DiscoveryError> {
+    let raw = match run_tmux_list_panes(tmux).await {
+        Ok(s) => s,
+        Err(DiscoveryError::TmuxSpawn(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(other) => return Err(other),
+    };
+    Ok(parse_tmux_list_panes(&raw))
+}
+
+/// Build the `pane_key` used to identify a tmux pane in the watcher's
+/// diff map. Format: `<tmux_session>:<pane_id>`, e.g. `dev:%0`.
+pub fn pane_key_from(tmux_session: &str, pane_id: &str) -> String {
+    format!("{tmux_session}:{pane_id}")
 }
 
 async fn run_tmux_list_panes(tmux: &Path) -> Result<String, DiscoveryError> {
@@ -99,7 +147,7 @@ async fn run_tmux_list_panes(tmux: &Path) -> Result<String, DiscoveryError> {
             "list-panes",
             "-a",
             "-F",
-            "#{session_name} #{pane_id} #{pane_pid} #{pane_current_path}",
+            "#{session_name} #{pane_id} #{pane_pid} #{pane_current_path} #{pane_current_command}",
         ])
         .output()
         .await
@@ -116,22 +164,27 @@ async fn run_tmux_list_panes(tmux: &Path) -> Result<String, DiscoveryError> {
 /// Parse the line-oriented output of `tmux list-panes -a -F ...`.
 ///
 /// Malformed lines (wrong number of fields, non-numeric pid) are skipped.
-/// The path field is taken verbatim — callers may want to canonicalize.
+/// The path and command fields are taken verbatim — callers may want to
+/// canonicalize. The command field is the LAST field and is allowed to
+/// contain spaces (e.g. `"bash -c 'opencode run ...'"`), so the parser
+/// uses `splitn(5, ' ')` rather than `split_whitespace`.
 pub(crate) fn parse_tmux_list_panes(output: &str) -> Vec<RawPane> {
     output
         .lines()
         .filter_map(|line| {
-            let mut it = line.splitn(4, ' ');
+            let mut it = line.splitn(5, ' ');
             let session = it.next()?.to_string();
             let pane_id = it.next()?.to_string();
             let pid_str = it.next()?;
             let pid: u32 = pid_str.parse().ok()?;
             let working_dir = PathBuf::from(it.next()?);
+            let pane_current_command = it.next()?.to_string();
             Some(RawPane {
                 session,
                 pane_id,
                 pid,
                 working_dir,
+                pane_current_command,
             })
         })
         .collect()
@@ -142,7 +195,7 @@ pub(crate) fn parse_tmux_list_panes(output: &str) -> Vec<RawPane> {
 /// On Linux `/proc/<pid>/comm` is exact. On macOS `ps -o comm=` is
 /// case-insensitive relative to the kernel — we match case-insensitively
 /// to be safe.
-pub(crate) fn is_opencode_comm(comm: &str) -> bool {
+pub fn is_opencode_comm(comm: &str) -> bool {
     let trimmed = comm.trim();
     if trimmed.eq_ignore_ascii_case("opencode") {
         return true;
@@ -204,7 +257,7 @@ mod tests {
 
     #[test]
     fn parse_tmux_list_panes_parses_valid_output() {
-        let out = "mysession %0 12345 /home/u/proj\nanothersession %1 67890 /tmp\n";
+        let out = "mysession %0 12345 /home/u/proj bash\nanothersession %1 67890 /tmp zsh\n";
         let panes = parse_tmux_list_panes(out);
         assert_eq!(panes.len(), 2);
         assert_eq!(
@@ -214,6 +267,7 @@ mod tests {
                 pane_id: "%0".into(),
                 pid: 12345,
                 working_dir: PathBuf::from("/home/u/proj"),
+                pane_current_command: "bash".into(),
             }
         );
         assert_eq!(
@@ -223,8 +277,35 @@ mod tests {
                 pane_id: "%1".into(),
                 pid: 67890,
                 working_dir: PathBuf::from("/tmp"),
+                pane_current_command: "zsh".into(),
             }
         );
+    }
+
+    #[test]
+    fn parse_tmux_list_panes_handles_pane_current_command_with_spaces() {
+        // tmux pane_current_command can contain spaces
+        // (e.g. `opencode run 'msg'`). The parser must use
+        // `splitn(5, ' ')` so the trailing command field is not split.
+        let out = "mysession %0 12345 /tmp opencode run 'msg'\n";
+        let panes = parse_tmux_list_panes(out);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].session, "mysession");
+        assert_eq!(panes[0].pane_id, "%0");
+        assert_eq!(panes[0].pid, 12345);
+        assert_eq!(panes[0].working_dir, PathBuf::from("/tmp"));
+        assert_eq!(panes[0].pane_current_command, "opencode run 'msg'");
+    }
+
+    #[test]
+    fn parse_tmux_list_panes_handles_pane_current_command_with_shell_command() {
+        // When the pane's foreground is `bash -c 'opencode run ...'`,
+        // the command field can contain both spaces and quotes. The
+        // parser must keep the whole command in one field.
+        let out = "mysession %0 12345 /tmp bash -c 'opencode run ...'\n";
+        let panes = parse_tmux_list_panes(out);
+        assert_eq!(panes.len(), 1);
+        assert_eq!(panes[0].pane_current_command, "bash -c 'opencode run ...'");
     }
 
     #[test]
@@ -235,7 +316,7 @@ mod tests {
 
     #[test]
     fn parse_tmux_list_panes_skips_malformed_lines() {
-        let out = "ok %0 12345 /tmp\nbad-line\n%1 67890 /tmp\n";
+        let out = "ok %0 12345 /tmp bash\nbad-line\n%1 67890 /tmp zsh\n";
         let panes = parse_tmux_list_panes(out);
         assert_eq!(panes.len(), 1);
         assert_eq!(panes[0].pane_id, "%0");
