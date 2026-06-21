@@ -1,8 +1,11 @@
 #![allow(clippy::expect_used)]
 
 use parking_lot::Mutex;
+use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 use agentd::db::Db;
 use agentd::event_bus::EventBus;
@@ -46,6 +49,7 @@ autostart = true
 }
 
 #[tokio::test]
+#[ignore = "needs AF_UNIX support (some local sandboxes block bind)"]
 async fn autostart_spawns_every_plugin_in_manifest() {
     let (paths, db, bus) = fresh("spawns");
     let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -82,4 +86,115 @@ autostart = false
     let n = sup.autostart(&paths).await.expect("autostart");
     assert_eq!(n, 0);
     assert!(calls.lock().is_empty());
+}
+
+#[tokio::test]
+#[ignore = "needs AF_UNIX support (some local sandboxes block bind)"]
+async fn bind_and_serve_dispatches_plugin_calls() {
+    let (paths, db, bus) = fresh("dispatch");
+    let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
+    let sup = PluginSupervisor::new(bus, &db, two_plugin_manifest(), spawner);
+
+    let bound = sup
+        .bind_and_serve("test_plugin", &paths)
+        .expect("bind_and_serve");
+    assert_eq!(bound, paths.plugin_socket_path("test_plugin"));
+
+    let mut client = UnixStream::connect(&bound).await.expect("connect");
+
+    // 1. plugin.hello
+    send_request(
+        &mut client,
+        1,
+        "plugin.hello",
+        json!({"name": "test_plugin", "version": "0.1.0"}),
+    )
+    .await;
+    let resp = read_response(&mut client).await;
+    assert_eq!(resp["result"]["plugin_id"], "test_plugin");
+    assert_eq!(resp["result"]["heartbeat_interval_secs"], 5);
+
+    // 2. plugin.heartbeat
+    send_request(&mut client, 2, "plugin.heartbeat", json!({})).await;
+    let resp = read_response(&mut client).await;
+    assert_eq!(resp["result"]["ok"], true);
+
+    // 3. session.discover
+    send_request(
+        &mut client,
+        3,
+        "session.discover",
+        json!({
+            "tmux_session": "%1",
+            "tmux_pane_id": "%0",
+            "working_dir": "/tmp/proj",
+        }),
+    )
+    .await;
+    let resp = read_response(&mut client).await;
+    assert_eq!(resp["result"]["ok"], true);
+    let session_id = resp["result"]["session_id"]
+        .as_str()
+        .expect("session_id string");
+    assert!(
+        uuid::Uuid::parse_str(session_id).is_ok(),
+        "session_id must be a uuid, got {session_id}"
+    );
+
+    sup.shutdown().await;
+    let _ = std::fs::remove_file(&bound);
+}
+
+#[tokio::test]
+#[ignore = "needs AF_UNIX support (some local sandboxes block bind)"]
+async fn bind_and_serve_is_idempotent_for_same_name() {
+    let (paths, db, bus) = fresh("idempotent");
+    let calls: Arc<Mutex<Vec<(String, PathBuf, PathBuf)>>> = Arc::new(Mutex::new(Vec::new()));
+    let spawner: Arc<dyn PluginSpawner> = Arc::new(MockPluginSpawner::new(Arc::clone(&calls)));
+    let sup = PluginSupervisor::new(bus, &db, two_plugin_manifest(), spawner);
+
+    let first = sup
+        .bind_and_serve("test_plugin", &paths)
+        .expect("first bind");
+    let second = sup
+        .bind_and_serve("test_plugin", &paths)
+        .expect("second bind");
+    assert_eq!(first, second);
+
+    // Server still functional: one client can connect after the
+    // duplicate bind.
+    let mut client = UnixStream::connect(&first).await.expect("connect");
+    send_request(
+        &mut client,
+        1,
+        "plugin.hello",
+        json!({"name": "test_plugin"}),
+    )
+    .await;
+    let resp = read_response(&mut client).await;
+    assert_eq!(resp["result"]["plugin_id"], "test_plugin");
+
+    sup.shutdown().await;
+    let _ = std::fs::remove_file(&first);
+}
+
+async fn send_request(client: &mut UnixStream, id: u64, method: &str, params: Value) {
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    let mut bytes = serde_json::to_vec(&req).expect("encode");
+    bytes.push(b'\n');
+    client.write_all(&bytes).await.expect("write");
+}
+
+async fn read_response(client: &mut UnixStream) -> Value {
+    let mut reader = tokio::io::BufReader::new(client);
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await.expect("read");
+    assert!(n > 0, "expected response, got EOF");
+    serde_json::from_str(line.trim()).expect("parse response")
 }

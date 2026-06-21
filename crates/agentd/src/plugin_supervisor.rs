@@ -1,14 +1,20 @@
 use crate::db::Db;
 use crate::event_bus::{Event, EventBus, SharedEventBus};
+use crate::handlers::plugin_handlers;
+use crate::ipc::framing;
 use crate::paths::Paths;
 use crate::plugin_heartbeat::{HEARTBEAT_TIMEOUT, PluginHeartbeat};
 use crate::plugin_spawner::{PluginHandle, PluginSpawner};
 use crate::plugins_manifest::PluginsManifest;
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -34,6 +40,10 @@ pub struct PluginSupervisor {
     handles: Mutex<HashMap<String, PluginHandle>>,
     heartbeats: parking_lot::Mutex<HashMap<String, Arc<PluginHeartbeat>>>,
     paths: parking_lot::Mutex<Option<Paths>>,
+    /// Per-plugin UDS bound by [`Self::bind_and_serve`]. Maps the plugin
+    /// name to the path of the bound socket. The second call for the
+    /// same name is a no-op (idempotent).
+    plugin_uds_paths: parking_lot::Mutex<HashMap<String, PathBuf>>,
     shutdown: Arc<parking_lot::Mutex<bool>>,
 }
 
@@ -57,6 +67,7 @@ impl PluginSupervisor {
             handles: Mutex::new(HashMap::new()),
             heartbeats: parking_lot::Mutex::new(HashMap::new()),
             paths: parking_lot::Mutex::new(None),
+            plugin_uds_paths: parking_lot::Mutex::new(HashMap::new()),
             shutdown: Arc::new(parking_lot::Mutex::new(false)),
         }
     }
@@ -83,16 +94,13 @@ impl PluginSupervisor {
     /// Spawn every plugin with `autostart=true`. Returns the number of
     /// plugins successfully launched.
     ///
-    /// Each spawned plugin gets a `PluginHandle` (the child process),
-    /// a `PluginHeartbeat` (liveness state, touched by the UDS server
-    /// task), and a monitor task (wakes every 5s, restarts stale
-    /// plugins up to 3 times in 60s before giving up).
-    ///
-    /// After spawn, a background task binds the per-plugin UDS and
-    /// waits for the child's `plugin.hello` (2s timeout). The result
-    /// is logged; the DB `last_connected_at` row is updated on
-    /// success. The full per-plugin accept loop lands in Plan 4 —
-    /// for v1 this is a fire-and-forget handshake.
+    /// For each `autostart` plugin the supervisor first binds the
+    /// per-plugin UDS (via [`Self::bind_and_serve`]) so the child
+    /// process finds a ready socket when it tries to connect, and only
+    /// then spawns the child. Each spawned plugin gets a
+    /// `PluginHandle` (the child process), a `PluginHeartbeat`
+    /// (liveness state), and a monitor task (wakes every 5s, restarts
+    /// stale plugins up to 3 times in 60s before giving up).
     pub async fn autostart(&self, paths: &Paths) -> Result<usize, SupervisorError> {
         // Stash the paths for use by `ensure_plugin` later.
         *self.paths.lock() = Some(paths.clone());
@@ -105,48 +113,18 @@ impl PluginSupervisor {
             if !entry.autostart {
                 continue;
             }
+            // Bind the per-plugin UDS FIRST so the child finds a ready
+            // socket when it starts up. If the bind fails (e.g. the
+            // runtime dir is missing), skip the spawn — there is no
+            // server end for the child to talk to.
+            if let Err(e) = self.bind_and_serve(&entry.name, paths) {
+                tracing::warn!(plugin = %entry.name, error = %e, "bind_and_serve failed");
+                continue;
+            }
             let socket = paths.plugin_socket_path(&entry.name);
             let binary = Path::new(&entry.binary);
             match spawner.spawn(&entry.name, binary, &socket).await {
                 Ok(handle) => {
-                    // Fire-and-forget handshake. The full per-plugin
-                    // accept loop is a Plan 4 task.
-                    let handshake_db = self.db.reopen();
-                    let handshake_socket = socket.clone();
-                    let plugin_name = entry.name.clone();
-                    tokio::spawn(async move {
-                        match crate::plugin_uds::bind_and_handshake(
-                            &handshake_socket,
-                            std::time::Duration::from_secs(2),
-                        )
-                        .await
-                        {
-                            Ok(hs) => {
-                                if let Err(e) = crate::plugin_uds::record_handshake(
-                                    &handshake_db,
-                                    &hs.plugin_name,
-                                ) {
-                                    tracing::warn!(
-                                        plugin = %hs.plugin_name,
-                                        error = %e,
-                                        "record_handshake failed",
-                                    );
-                                } else {
-                                    tracing::info!(
-                                        plugin = %hs.plugin_name,
-                                        "plugin handshake complete",
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    plugin = %plugin_name,
-                                    error = %e,
-                                    "plugin handshake failed",
-                                );
-                            }
-                        }
-                    });
                     self.connected.lock().await.push(entry.name.clone());
                     self.handles.lock().await.insert(entry.name.clone(), handle);
                     let beat = Arc::new(PluginHeartbeat::new());
@@ -162,6 +140,54 @@ impl PluginSupervisor {
             }
         }
         Ok(count)
+    }
+
+    /// Bind a per-plugin UDS at `paths.plugin_socket_path(name)` and
+    /// start the accept loop. Idempotent: if a UDS is already bound
+    /// for `name`, returns the existing path without rebinding.
+    ///
+    /// The accept loop dispatches every accepted connection through
+    /// [`plugin_handlers::dispatch`] (`plugin.hello`,
+    /// `session.discover`, `session.report_event`, `plugin.heartbeat`,
+    /// `plugin.bye`). It runs until the supervisor's `shutdown` flag
+    /// is set, then exits. The bound socket file is left in place so
+    /// the child can find it; cleanup happens when the runtime dir
+    /// is removed (or via `std::fs::remove_file` by the caller).
+    pub fn bind_and_serve(&self, name: &str, paths: &Paths) -> Result<PathBuf, SupervisorError> {
+        // Idempotency: if we already bound a UDS for this plugin,
+        // return the existing path. The accept-loop task is still
+        // alive on the supervisor's shutdown flag.
+        if let Some(existing) = self.plugin_uds_paths.lock().get(name).cloned() {
+            return Ok(existing);
+        }
+        let socket = paths.plugin_socket_path(name);
+        // Create the parent runtime dir if missing (mirrors what
+        // `ipc::control::ControlServer::bind` does). Idempotent.
+        if let Some(parent) = socket.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket)?;
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+
+        // Stash the path BEFORE spawning the accept loop so a second
+        // concurrent call for the same name sees the entry and skips
+        // re-binding.
+        self.plugin_uds_paths
+            .lock()
+            .insert(name.to_string(), socket.clone());
+
+        let name = name.to_string();
+        let shutdown = Arc::clone(&self.shutdown);
+        let bus = Arc::clone(&self.bus);
+        // Each connection handler will reopen its own `Db`; the
+        // accept loop only needs the supervisor's handle for that.
+        let supervisor_db = self.db.reopen();
+        tokio::spawn(async move {
+            accept_loop(listener, name, bus, supervisor_db, shutdown).await;
+        });
+
+        Ok(socket)
     }
 
     /// Spawn a background monitor task for one plugin. The task wakes
@@ -302,3 +328,136 @@ impl Db {
 // Silence unused-import warnings for items only used by later tasks.
 #[allow(dead_code)]
 fn _silence_unused(_: &Uuid) {}
+
+/// How often the accept loop re-checks the shutdown flag when no
+/// client is connecting. Bounds the latency between
+/// `supervisor.shutdown()` and the loop exiting.
+const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Drive a per-plugin UDS listener. Loops on `accept()`, polls
+/// `shutdown` every [`ACCEPT_POLL_INTERVAL`] so a supervisor shutdown
+/// is observed quickly even if no client connects, and spawns one
+/// per-connection task per accepted stream.
+async fn accept_loop(
+    listener: UnixListener,
+    plugin_name: String,
+    bus: SharedEventBus,
+    supervisor_db: Db,
+    shutdown: Arc<parking_lot::Mutex<bool>>,
+) {
+    loop {
+        if *shutdown.lock() {
+            return;
+        }
+        match tokio::time::timeout(ACCEPT_POLL_INTERVAL, listener.accept()).await {
+            Ok(Ok((stream, _addr))) => {
+                // Each connection handler owns its own `Db` so the
+                // `&Db` passed to the sync `dispatch` does not cross
+                // tasks (rusqlite's `Connection` is `!Sync`).
+                let db = supervisor_db.reopen();
+                let bus = Arc::clone(&bus);
+                let name = plugin_name.clone();
+                tokio::spawn(async move {
+                    handle_plugin_connection(stream, db, bus, name).await;
+                });
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(plugin = %plugin_name, error = %e, "plugin accept failed");
+            }
+            Err(_) => {
+                // Timeout — loop to re-check `shutdown`.
+            }
+        }
+    }
+}
+
+/// Handle one accepted plugin UDS connection: read NDJSON frames in a
+/// loop, dispatch each through [`plugin_handlers::dispatch`], write
+/// the JSON-RPC response. Stops on EOF, framing error, or write error.
+async fn handle_plugin_connection(
+    stream: tokio::net::UnixStream,
+    db: Db,
+    bus: SharedEventBus,
+    plugin_name: String,
+) {
+    let (r, mut w) = stream.into_split();
+    let mut reader = tokio::io::BufReader::new(r);
+    loop {
+        // `framing::read_message` is sync and would block the runtime
+        // on a tokio stream, so use the async `read_line` like
+        // `plugin_uds::bind_and_handshake` does, then parse the line
+        // through the same `Value` path. Bound each read so a wedged
+        // client can't pin a handler forever.
+        let mut line = String::new();
+        let n = match tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut line))
+            .await
+        {
+            Ok(Ok(n)) => n,
+            Ok(Err(e)) => {
+                tracing::debug!(
+                    plugin = %plugin_name,
+                    error = %e,
+                    "plugin read error; closing connection",
+                );
+                return;
+            }
+            Err(_) => {
+                tracing::debug!(
+                    plugin = %plugin_name,
+                    "plugin read timeout; closing connection",
+                );
+                return;
+            }
+        };
+        if n == 0 {
+            return; // EOF
+        }
+        let msg: Value = match serde_json::from_str(line.trim()) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(
+                    plugin = %plugin_name,
+                    error = %e,
+                    "plugin framing error; closing connection",
+                );
+                return;
+            }
+        };
+        let id = msg.get("id").cloned().unwrap_or(Value::Null);
+        let method = msg
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
+        let result = plugin_handlers::dispatch(&method, params, &db, &plugin_name, &bus);
+        let resp = match result {
+            Ok(value) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": value,
+            }),
+            Err(e) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": e.code(),
+                    "message": e.to_string(),
+                },
+            }),
+        };
+        // `framing::write_message` is sync and takes `std::io::Write`;
+        // serialize into a `Vec<u8>` first, then push through the
+        // async writer (same pattern `bind_and_handshake` uses).
+        let mut buf: Vec<u8> = Vec::new();
+        if framing::write_message(&mut buf, &resp).is_err() {
+            return;
+        }
+        if w.write_all(&buf).await.is_err() {
+            return;
+        }
+        if w.flush().await.is_err() {
+            return;
+        }
+    }
+}
