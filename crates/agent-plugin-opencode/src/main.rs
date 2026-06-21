@@ -37,10 +37,18 @@ async fn main() -> Result<()> {
     }
     let use_watch = cli.watch || (!cli.mock && !cli.stdin);
     let interval = Duration::from_millis(cli.poll_interval_ms);
+    let pane_check_interval = Duration::from_millis(cli.pane_check_interval_ms);
     if use_watch {
         let tmux = Path::new("tmux");
         let panes = agent_plugin_opencode::discovery::discover_with_tmux(tmux).await?;
-        agent_plugin_opencode::watcher::run(&mut client, panes, interval, tmux).await?;
+        agent_plugin_opencode::watcher::run(
+            &mut client,
+            panes,
+            interval,
+            pane_check_interval,
+            tmux,
+        )
+        .await?;
         return Ok(());
     }
     if cli.mock {

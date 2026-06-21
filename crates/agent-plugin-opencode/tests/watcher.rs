@@ -215,7 +215,14 @@ async fn run_loop_emits_status_events_on_change() {
 
     let mut client = AgentdClient::connect(&sock).await.expect("connect");
     let task = tokio::spawn(async move {
-        let _ = run(&mut client, panes, Duration::from_millis(150), &tmux).await;
+        let _ = run(
+            &mut client,
+            panes,
+            Duration::from_millis(150),
+            Duration::from_millis(500),
+            &tmux,
+        )
+        .await;
     });
 
     let got_three = wait_for_n_distinct_statuses(&log, 3, Duration::from_secs(5)).await;

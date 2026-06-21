@@ -106,11 +106,14 @@ echo ">> log file: $LOG_FILE"
 
 # --- 2b. Minimal config so the opencode plugin is autostarted --------------
 mkdir -p "$XDG_CONFIG_HOME/agentd"
-cat > "$XDG_CONFIG_HOME/agentd/plugins.toml" <<EOF
+# Use single-quoted heredoc delimiter ('EOF') so backticks, dollar
+# signs, and other bash metacharacters in the TOML config are
+# treated as literal text (otherwise bash tries to execute them).
+cat > "$XDG_CONFIG_HOME/agentd/plugins.toml" <<'EOF'
 [[plugins]]
 name = "opencode"
 # Empty `binary` means "use RealPluginSpawner::resolve", which honors
-# \$AGENTD_PLUGIN_BIN_DIR (set above) for the smoke test path.
+# $AGENTD_PLUGIN_BIN_DIR (set above) for the smoke test path.
 binary = ""
 autostart = true
 EOF
