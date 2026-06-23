@@ -27,3 +27,14 @@ Cargo.lock.bak
 # locally. Keep the path SHORT — UDS has a ~108 byte path limit (SUN_LEN),
 # and our worktree path is already long.
 /tmp/
+
+# Per-dev agent overrides (opencode + nono local)
+opencode.local.json
+.nono/local-*.json
+
+# Profile integrity hashes (generated, used for tamper detection)
+.nono/profile.json.sha256
+opencode.json.sha256
+
+# sdd (project data dir)
+.sdd/

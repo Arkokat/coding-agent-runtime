@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "name": "agentd-project",
+    "version": "1.0.0",
+    "description": "Project-scoped profile for agentd coding-agent sessions. Extends opencode base (preserves ~/.config/opencode r/w for opencode's own auth). Adds Rust registry, context7 docs, and opencode.ai network access. SSH dropped."
+  },
+  "extends": "opencode",
+  "workdir": {
+    "access": "readwrite"
+  },
+  "filesystem": {
+    "allow": [
+      "$WORKDIR"
+    ],
+    "deny": [
+      "~/.aws",
+      "~/.aws/**",
+      "~/.config/gh",
+      "~/.config/gh/**",
+      "~/.gnupg",
+      "~/.gnupg/**",
+      "~/.docker",
+      "~/.docker/**",
+      "~/.kube",
+      "~/.kube/**",
+      "~/.config/gcloud",
+      "~/.config/gcloud/**",
+      "~/.azure",
+      "~/.azure/**",
+      "~/.netrc",
+      "~/.bash_history",
+      "~/.zsh_history",
+      "~/.python_history",
+      "**/.env",
+      "**/.env.*",
+      "**/secrets.*",
+      "**/*credentials*",
+      "**/*credentials.json",
+      "**/.npmrc",
+      "**/.pypirc",
+      "**/*.pem",
+      "**/*.key",
+      "**/*.p12",
+      "**/*.pfx",
+      "/etc/shadow",
+      "/etc/sudoers",
+      "/etc/sudoers.d",
+      "/etc/sudoers.d/**",
+      "/etc/master.passwd",
+      "/var/run/docker.sock",
+      "./.nono/profile.json",
+      "./opencode.json",
+      "./opencode.local.json"
+    ]
+  },
+  "network": {
+    "block": false,
+    "allow_domain": [
+      "crates.io",
+      "index.crates.io",
+      "static.crates.io",
+      "context7.com",
+      "api.context7.com",
+      "opencode.ai",
+      "api.opencode.ai"
+    ],
+    "credentials": ["github"]
+  }
+}
