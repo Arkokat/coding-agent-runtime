@@ -94,16 +94,6 @@ pub async fn capture_pane(pane: &str, lines: u16, tmux: &Path) -> String {
 /// status we observed (so we only emit on transitions).
 type PaneState = (Uuid, Status);
 
-/// Return the keys present in `prev` but not in `curr` — i.e., the
-/// panes that have disappeared between two discovery sweeps.
-///
-/// Extracted as a free function so the diff logic can be unit-tested
-/// without spinning up the full watch loop.
-#[allow(clippy::implicit_hasher)] // HashSet<String> is fine for this internal helper
-pub fn diff_panes(prev: &HashSet<String>, curr: &HashSet<String>) -> Vec<String> {
-    prev.difference(curr).cloned().collect()
-}
-
 /// Diff `known` (`pane_key` -> `V`) against `current` (`pane_key` ->
 /// `pane_current_command`), returning `(vanished, new)` `pane_key`s.
 ///
