@@ -44,7 +44,7 @@ jobs:
           cp LICENSE README.md out/
           cd out && tar cJf ../agentd-${{ github.ref_name }}-${{ matrix.target }}.tar.xz *
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: agentd-${{ matrix.target }}
           path: agentd-${{ github.ref_name }}-${{ matrix.target }}.tar.xz
