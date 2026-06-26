@@ -20,9 +20,9 @@ agentd-protocol = { path = "../agentd-protocol" }
 clap = { workspace = true, features = ["env"] }
 serde.workspace = true
 serde_json.workspace = true
-toml = "0.8"
+toml = "1.1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "signal", "time", "fs", "process"] }
-rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono"] }
 libc = "0.2"
 uuid.workspace = true
 chrono.workspace = true
@@ -32,12 +32,12 @@ async-trait.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
-nix = { version = "0.27", features = ["fs", "socket", "user"] }
-sha2 = "0.10"
+nix = { version = "0.31", features = ["fs", "socket", "user"] }
+sha2 = "0.11"
 futures = "0.3"
 ctrlc = "3"
-ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
 
 [dev-dependencies]
 agentd-testing = { path = "../agentd-testing" }
